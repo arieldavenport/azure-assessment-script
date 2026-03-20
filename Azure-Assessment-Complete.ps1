@@ -635,16 +635,19 @@ foreach ($sub in $subscriptions) {
     } catch {}
 
     Write-SubSection "VPN Gateways"
-    Get-AzVirtualNetworkGateway -ErrorAction SilentlyContinue | ForEach-Object {
-        $null = $allVPNGateways.Add([PSCustomObject]@{
-            Subscription  = $subName
-            Name          = $_.Name
-            ResourceGroup = $_.ResourceGroupName
-            SKU           = if ($_.Sku) { $_.Sku.Name } else { $null }
-            GatewayType   = $_.GatewayType
-            VpnType       = $_.VpnType
-            ActiveActive  = $_.ActiveActive
-        })
+    Get-AzResource -ResourceType 'Microsoft.Network/virtualNetworkGateways' -ErrorAction SilentlyContinue | ForEach-Object {
+        $gw = Get-AzVirtualNetworkGateway -Name $_.Name -ResourceGroupName $_.ResourceGroupName -ErrorAction SilentlyContinue
+        if ($gw) {
+            $null = $allVPNGateways.Add([PSCustomObject]@{
+                Subscription  = $subName
+                Name          = $gw.Name
+                ResourceGroup = $gw.ResourceGroupName
+                SKU           = if ($gw.Sku) { $gw.Sku.Name } else { $null }
+                GatewayType   = $gw.GatewayType
+                VpnType       = $gw.VpnType
+                ActiveActive  = $gw.ActiveActive
+            })
+        }
     }
 
     Write-SubSection "ExpressRoute Circuits"

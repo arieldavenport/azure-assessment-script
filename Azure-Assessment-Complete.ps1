@@ -91,7 +91,7 @@ function Get-MetricSafe {
     try {
         $metric = Get-AzMetric -ResourceId $ResourceId `
             -MetricName $MetricName `
-            -TimeGrain 01:00:00 `
+            -TimeGrain 1.00:00:00 `
             -StartTime $metricsStart `
             -EndTime $endTime `
             -AggregationType $Aggregation `
@@ -298,7 +298,12 @@ foreach ($sub in $subscriptions) {
 
     if (-not $SkipMetrics -and $vms) {
         Write-SubSection "VM CPU/Memory Metrics (${DaysBack}d)"
-        foreach ($vm in ($vms | Where-Object { $_.PowerState -eq 'VM running' })) {
+        $runningVMs = @($vms | Where-Object { $_.PowerState -eq 'VM running' })
+        $vmCount = $runningVMs.Count
+        $vmIndex = 0
+        foreach ($vm in $runningVMs) {
+            $vmIndex++
+            Write-Host "    [$vmIndex/$vmCount] Collecting metrics for $($vm.Name)..." -ForegroundColor DarkGray -NoNewline
             try {
                 $cpuMetric = Get-MetricSafe -ResourceId $vm.Id -MetricName 'Percentage CPU'
                 $avgCpu = if ($cpuMetric) { ($cpuMetric.Data | Measure-Object -Property Average -Average).Average } else { -1 }
@@ -313,7 +318,8 @@ foreach ($sub in $subscriptions) {
                                      elseif ($avgCpu -lt 15) { 'Candidate for DOWNSIZE' }
                                      else { 'OK' }
                 })
-            } catch { Write-Host "    ! Could not get metrics for $($vm.Name)" -ForegroundColor DarkYellow }
+                Write-Host " done" -ForegroundColor DarkGray
+            } catch { Write-Host " failed" -ForegroundColor DarkYellow }
         }
     }
 

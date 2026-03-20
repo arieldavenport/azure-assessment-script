@@ -761,7 +761,7 @@ function Invoke-OptionR_ReadinessReport {
     $hasMetrics = $false
     $sampleVm = $vms | Where-Object { $_.PowerState -eq 'VM running' -or $true } | Select-Object -First 1
     if ($sampleVm) {
-        $m = Get-AzMetric -ResourceId $sampleVm.Id -MetricName 'Percentage CPU' -TimeGrain 01:00:00 -StartTime (Get-Date).AddDays(-7) -EndTime (Get-Date) -AggregationType Average -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
+        $m = Get-AzMetric -ResourceId $sampleVm.Id -MetricName 'Percentage CPU' -TimeGrain 1.00:00:00 -StartTime (Get-Date).AddDays(-7) -EndTime (Get-Date) -AggregationType Average -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
         if ($m -and $m.Data.Count -gt 0) { $hasMetrics = $true }
     }
     $null = $report.Add([PSCustomObject]@{

@@ -17,12 +17,13 @@
     - All changes are additive (nothing is deleted or overwritten)
 #>
 
-[CmdletBinding()]
+[CmdletBinding(SupportsShouldProcess)]
 param(
     [string]$SubscriptionId,
     [string]$LogAnalyticsWorkspaceName,
     [string]$LogAnalyticsResourceGroup,
-    [string]$Location = 'southcentralus'
+    [string]$Location = 'southcentralus',
+    [switch]$RunAll
 )
 
 $ErrorActionPreference = 'Continue'
@@ -312,37 +313,41 @@ function Invoke-Option4_InstallAMA {
 
         # Enable system-assigned managed identity if not already
         if (-not $vm.Identity -or $vm.Identity.Type -notmatch 'SystemAssigned') {
-            Write-Host "    Enabling system-assigned managed identity..." -ForegroundColor Yellow
-            Update-AzVM -ResourceGroupName $vm.ResourceGroupName -VM $vm -IdentityType SystemAssigned -ErrorAction SilentlyContinue | Out-Null
+            if ($PSCmdlet.ShouldProcess($vm.Name, 'Enable system-assigned managed identity')) {
+                Write-Host "    Enabling system-assigned managed identity..." -ForegroundColor Yellow
+                Update-AzVM -ResourceGroupName $vm.ResourceGroupName -VM $vm -IdentityType SystemAssigned -ErrorAction SilentlyContinue | Out-Null
+            }
         }
 
-        $osType = $vm.StorageProfile.OsDisk.OsType
-        if ($osType -eq 'Windows') {
-            Write-Host "    Installing AzureMonitorWindowsAgent..." -ForegroundColor Yellow
-            Set-AzVMExtension `
-                -ResourceGroupName $vm.ResourceGroupName `
-                -VMName $vm.Name `
-                -Name 'AzureMonitorWindowsAgent' `
-                -Publisher 'Microsoft.Azure.Monitor' `
-                -ExtensionType 'AzureMonitorWindowsAgent' `
-                -TypeHandlerVersion '1.0' `
-                -Location $vm.Location `
-                -EnableAutomaticUpgrade $true `
-                -ErrorAction SilentlyContinue | Out-Null
-        } else {
-            Write-Host "    Installing AzureMonitorLinuxAgent..." -ForegroundColor Yellow
-            Set-AzVMExtension `
-                -ResourceGroupName $vm.ResourceGroupName `
-                -VMName $vm.Name `
-                -Name 'AzureMonitorLinuxAgent' `
-                -Publisher 'Microsoft.Azure.Monitor' `
-                -ExtensionType 'AzureMonitorLinuxAgent' `
-                -TypeHandlerVersion '1.0' `
-                -Location $vm.Location `
-                -EnableAutomaticUpgrade $true `
-                -ErrorAction SilentlyContinue | Out-Null
+        $osType = if ($vm.StorageProfile -and $vm.StorageProfile.OsDisk) { $vm.StorageProfile.OsDisk.OsType } else { 'Linux' }
+        if ($PSCmdlet.ShouldProcess($vm.Name, "Install Azure Monitor Agent ($osType)")) {
+            if ($osType -eq 'Windows') {
+                Write-Host "    Installing AzureMonitorWindowsAgent..." -ForegroundColor Yellow
+                Set-AzVMExtension `
+                    -ResourceGroupName $vm.ResourceGroupName `
+                    -VMName $vm.Name `
+                    -Name 'AzureMonitorWindowsAgent' `
+                    -Publisher 'Microsoft.Azure.Monitor' `
+                    -ExtensionType 'AzureMonitorWindowsAgent' `
+                    -TypeHandlerVersion '1.0' `
+                    -Location $vm.Location `
+                    -EnableAutomaticUpgrade $true `
+                    -ErrorAction SilentlyContinue | Out-Null
+            } else {
+                Write-Host "    Installing AzureMonitorLinuxAgent..." -ForegroundColor Yellow
+                Set-AzVMExtension `
+                    -ResourceGroupName $vm.ResourceGroupName `
+                    -VMName $vm.Name `
+                    -Name 'AzureMonitorLinuxAgent' `
+                    -Publisher 'Microsoft.Azure.Monitor' `
+                    -ExtensionType 'AzureMonitorLinuxAgent' `
+                    -TypeHandlerVersion '1.0' `
+                    -Location $vm.Location `
+                    -EnableAutomaticUpgrade $true `
+                    -ErrorAction SilentlyContinue | Out-Null
+            }
+            Write-Host "    ✓ AMA extension deployed" -ForegroundColor Green
         }
-        Write-Host "    ✓ AMA extension deployed" -ForegroundColor Green
     }
     Write-Host "`n  AMA installation complete. Agents may take a few minutes to initialize." -ForegroundColor Cyan
 }
@@ -470,7 +475,7 @@ function Invoke-Option5_CreateDCR {
         $dcrId = if ($osType -eq 'Windows') { $script:WinDcrId } else { $script:LinDcrId }
         if (-not $dcrId) { continue }
 
-        $assocName = "assoc-$($vm.Name)"
+        $assocName = "assoc-$($vm.ResourceGroupName)-$($vm.Name)"
         try {
             $assocUri = "https://management.azure.com$($vm.Id)/providers/Microsoft.Insights/dataCollectionRuleAssociations/${assocName}?api-version=2022-06-01"
             $assocBody = @{
@@ -550,7 +555,7 @@ function Invoke-Option6_DiagnosticSettings {
             }
 
             $params = @{
-                Name             = 'centre-assessment-diag'
+                Name             = "centre-assessment-diag-$($res.Name.ToLower().Substring(0, [math]::Min(40, $res.Name.Length)))"
                 ResourceId       = $res.ResourceId
                 WorkspaceId      = $wsId
             }
@@ -830,6 +835,13 @@ if (-not $ctx) {
 
 if ($SubscriptionId) {
     Set-AzContext -SubscriptionId $SubscriptionId | Out-Null
+}
+
+# Non-interactive mode: run all prep steps and exit
+if ($RunAll) {
+    Write-Host "  Running in non-interactive mode (-RunAll)..." -ForegroundColor Cyan
+    Invoke-OptionA_RunAll
+    return
 }
 
 $running = $true

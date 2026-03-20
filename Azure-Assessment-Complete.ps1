@@ -32,7 +32,11 @@ param(
     [string]$SubscriptionId,
     [string]$OutputPath,
     [switch]$SkipMetrics,
-    [int]$DaysBack = 30
+    [int]$DaysBack = 30,
+    [string[]]$SubscriptionInclude,
+    [string[]]$SubscriptionExclude,
+    [int]$MaxRetries = 3,
+    [switch]$FailOnSectionError
 )
 
 #region ── Setup ──────────────────────────────────────────────────────────────
@@ -40,6 +44,10 @@ $ErrorActionPreference = 'Continue'
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmm'
 if (-not $OutputPath) { $OutputPath = "./AzureAssessment_$timestamp" }
 New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
+
+# Transcript logging
+$transcriptPath = "$OutputPath/Assessment-Transcript.log"
+try { Start-Transcript -Path $transcriptPath -Append | Out-Null } catch {}
 
 $startTime = Get-Date
 $endTime = Get-Date
@@ -91,6 +99,25 @@ function Get-MetricSafe {
         return $metric
     } catch { return $null }
 }
+
+function Invoke-WithRetry {
+    param([scriptblock]$ScriptBlock, [int]$Retries = $MaxRetries, [int]$BaseDelay = 2)
+    for ($i = 0; $i -lt $Retries; $i++) {
+        try { return & $ScriptBlock }
+        catch {
+            if ($i -eq ($Retries - 1)) { throw }
+            if ($_.Exception.Message -match '429|throttle|too many requests') {
+                $delay = $BaseDelay * [math]::Pow(2, $i) + (Get-Random -Minimum 0 -Maximum 2)
+                Write-Host "    Throttled, retrying in ${delay}s..." -ForegroundColor DarkYellow
+                Start-Sleep -Seconds $delay
+            } else { throw }
+        }
+    }
+}
+
+# Section error/timing tracking
+$sectionErrors = [System.Collections.ArrayList]::new()
+$sectionTimings = [System.Collections.ArrayList]::new()
 #endregion
 
 #region ── Authentication Check ───────────────────────────────────────────────
@@ -108,6 +135,12 @@ if ($SubscriptionId) {
     $subscriptions = @(Get-AzSubscription -SubscriptionId $SubscriptionId)
 } else {
     $subscriptions = Get-AzSubscription | Where-Object { $_.State -eq 'Enabled' }
+}
+if ($SubscriptionInclude) {
+    $subscriptions = @($subscriptions | Where-Object { $_.Name -in $SubscriptionInclude -or $_.Id -in $SubscriptionInclude })
+}
+if ($SubscriptionExclude) {
+    $subscriptions = @($subscriptions | Where-Object { $_.Name -notin $SubscriptionExclude -and $_.Id -notin $SubscriptionExclude })
 }
 Write-Host "  Subscriptions to assess: $($subscriptions.Count)" -ForegroundColor Green
 
@@ -258,7 +291,7 @@ foreach ($sub in $subscriptions) {
             OsType         = $vm.StorageProfile.OsDisk.OsType
             PowerState     = $vm.PowerState
             AvailabilityZone = ($vm.Zones -join ', ')
-            DiskEncryption = if ($vm.StorageProfile.OsDisk.EncryptionSettings.Enabled) { 'Enabled' } else { 'Check ADE' }
+            DiskEncryption = if ($vm.StorageProfile.OsDisk.EncryptionSettings -and $vm.StorageProfile.OsDisk.EncryptionSettings.Enabled) { 'Enabled' } else { 'Check ADE' }
         })
     }
 
@@ -292,9 +325,9 @@ foreach ($sub in $subscriptions) {
                 Name          = $_.Name
                 ResourceGroup = $_.ResourceGroupName
                 Location      = $_.Location
-                SKU           = $_.Sku.Name
-                Capacity      = $_.Sku.Capacity
-                UpgradePolicy = $_.UpgradePolicy.Mode
+                SKU           = if ($_.Sku) { $_.Sku.Name } else { $null }
+                Capacity      = if ($_.Sku) { $_.Sku.Capacity } else { $null }
+                UpgradePolicy = if ($_.UpgradePolicy) { $_.UpgradePolicy.Mode } else { $null }
                 Zones         = ($_.Zones -join ', ')
             })
         }
@@ -312,9 +345,9 @@ foreach ($sub in $subscriptions) {
             Name          = $plan.Name
             ResourceGroup = $plan.ResourceGroup
             Location      = $plan.Location
-            SKU           = $plan.Sku.Name
-            Tier          = $plan.Sku.Tier
-            Workers       = $plan.Sku.Capacity
+            SKU           = if ($plan.Sku) { $plan.Sku.Name } else { $null }
+            Tier          = if ($plan.Sku) { $plan.Sku.Tier } else { $null }
+            Workers       = if ($plan.Sku) { $plan.Sku.Capacity } else { $null }
             AppCount      = @($apps).Count
             Apps          = ($apps.Name -join ', ')
             Status        = $plan.Status
@@ -327,11 +360,11 @@ foreach ($sub in $subscriptions) {
             Subscription   = $subName
             Name           = $_.Name
             ResourceGroup  = $_.ResourceGroup
-            Plan           = $_.AppServicePlanId.Split('/')[-1]
+            Plan           = if ($_.AppServicePlanId) { $_.AppServicePlanId.Split('/')[-1] } else { $null }
             State          = $_.State
             HttpsOnly      = $_.HttpsOnly
-            MinTlsVersion  = $_.SiteConfig.MinTlsVersion
-            AlwaysOn       = $_.SiteConfig.AlwaysOn
+            MinTlsVersion  = if ($_.SiteConfig) { $_.SiteConfig.MinTlsVersion } else { $null }
+            AlwaysOn       = if ($_.SiteConfig) { $_.SiteConfig.AlwaysOn } else { $null }
             Runtime        = ($_.SiteConfig.LinuxFxVersion + $_.SiteConfig.WindowsFxVersion)
         })
     }
@@ -351,7 +384,7 @@ foreach ($sub in $subscriptions) {
                         State         = $fa.State
                         Runtime       = ($fa.SiteConfig.LinuxFxVersion + $fa.SiteConfig.WindowsFxVersion)
                         HttpsOnly     = $fa.HttpsOnly
-                        Plan          = $fa.AppServicePlanId.Split('/')[-1]
+                        Plan          = if ($fa.AppServicePlanId) { $fa.AppServicePlanId.Split('/')[-1] } else { $null }
                         Kind          = $_.Kind
                     })
                 }
@@ -384,10 +417,10 @@ foreach ($sub in $subscriptions) {
             ResourceGroup = $_.ResourceGroupName
             AttachedTo    = if ($_.ManagedBy) { $_.ManagedBy.Split('/')[-1] } else { 'UNATTACHED' }
             DiskSizeGB    = $_.DiskSizeGB
-            SKU           = $_.Sku.Name
+            SKU           = if ($_.Sku) { $_.Sku.Name } else { $null }
             IOPS          = $_.DiskIOPSReadWrite
             ThroughputMBps = $_.DiskMBpsReadWrite
-            Encryption    = $_.EncryptionSettingsCollection.Enabled
+            Encryption    = if ($_.EncryptionSettingsCollection) { $_.EncryptionSettingsCollection.Enabled } else { $null }
             Location      = $_.Location
             CreatedDate   = $_.TimeCreated
         })
@@ -413,7 +446,7 @@ foreach ($sub in $subscriptions) {
             Subscription   = $subName
             Name           = $sa.StorageAccountName
             ResourceGroup  = $sa.ResourceGroupName
-            SKU            = $sa.Sku.Name
+            SKU            = if ($sa.Sku) { $sa.Sku.Name } else { $null }
             Kind           = $sa.Kind
             AccessTier     = $sa.AccessTier
             HttpsOnly      = $sa.EnableHttpsTrafficOnly
@@ -461,7 +494,7 @@ foreach ($sub in $subscriptions) {
                 Subscription       = $subName
                 VNet               = $vnet.Name
                 PeeringName        = $_.Name
-                RemoteVNet         = $_.RemoteVirtualNetwork.Id.Split('/')[-1]
+                RemoteVNet         = if ($_.RemoteVirtualNetwork -and $_.RemoteVirtualNetwork.Id) { $_.RemoteVirtualNetwork.Id.Split('/')[-1] } else { $null }
                 State              = $_.PeeringState
                 AllowForwarded     = $_.AllowForwardedTraffic
                 AllowGatewayTransit = $_.AllowGatewayTransit
@@ -478,7 +511,7 @@ foreach ($sub in $subscriptions) {
                 Name          = $_.Name
                 ResourceGroup = $_.ResourceGroupName
                 IpAddress     = $_.IpAddress
-                SKU           = $_.Sku.Name
+                SKU           = if ($_.Sku) { $_.Sku.Name } else { $null }
                 Allocation    = $_.PublicIpAllocationMethod
             })
         }
@@ -512,7 +545,7 @@ foreach ($sub in $subscriptions) {
             Subscription  = $subName
             Name          = $_.Name
             ResourceGroup = $_.ResourceGroupName
-            SKU           = $_.Sku.Name
+            SKU           = if ($_.Sku) { $_.Sku.Name } else { $null }
             FrontendIPs   = $_.FrontendIpConfigurations.Count
             BackendPools  = $_.BackendAddressPools.Count
             Rules         = $_.LoadBalancingRules.Count
@@ -525,9 +558,9 @@ foreach ($sub in $subscriptions) {
             Subscription  = $subName
             Name          = $_.Name
             ResourceGroup = $_.ResourceGroupName
-            Tier          = $_.Sku.Tier
-            Capacity      = $_.Sku.Capacity
-            WAFEnabled    = $_.WebApplicationFirewallConfiguration.Enabled
+            Tier          = if ($_.Sku) { $_.Sku.Tier } else { $null }
+            Capacity      = if ($_.Sku) { $_.Sku.Capacity } else { $null }
+            WAFEnabled    = if ($_.WebApplicationFirewallConfiguration) { $_.WebApplicationFirewallConfiguration.Enabled } else { $null }
         })
     }
 
@@ -538,7 +571,7 @@ foreach ($sub in $subscriptions) {
                 Subscription  = $subName
                 Name          = $_.Name
                 ResourceGroup = $_.ResourceGroupName
-                SKU           = $_.Sku.Tier
+                SKU           = if ($_.Sku) { $_.Sku.Tier } else { $null }
                 ThreatIntel   = $_.ThreatIntelMode
                 ProvisionState = $_.ProvisioningState
             })
@@ -600,7 +633,7 @@ foreach ($sub in $subscriptions) {
             Subscription  = $subName
             Name          = $_.Name
             ResourceGroup = $_.ResourceGroupName
-            SKU           = $_.Sku.Name
+            SKU           = if ($_.Sku) { $_.Sku.Name } else { $null }
             GatewayType   = $_.GatewayType
             VpnType       = $_.VpnType
             ActiveActive  = $_.ActiveActive
@@ -612,10 +645,10 @@ foreach ($sub in $subscriptions) {
         $null = $allExpressRoute.Add([PSCustomObject]@{
             Subscription  = $subName
             Name          = $_.Name
-            SKU           = $_.Sku.Name
-            Tier          = $_.Sku.Tier
-            Bandwidth     = $_.ServiceProviderProperties.BandwidthInMbps
-            Provider      = $_.ServiceProviderProperties.ServiceProviderName
+            SKU           = if ($_.Sku) { $_.Sku.Name } else { $null }
+            Tier          = if ($_.Sku) { $_.Sku.Tier } else { $null }
+            Bandwidth     = if ($_.ServiceProviderProperties) { $_.ServiceProviderProperties.BandwidthInMbps } else { $null }
+            Provider      = if ($_.ServiceProviderProperties) { $_.ServiceProviderProperties.ServiceProviderName } else { $null }
             State         = $_.CircuitProvisioningState
         })
     }
@@ -626,7 +659,7 @@ foreach ($sub in $subscriptions) {
             Subscription      = $subName
             Name              = $_.Name
             ResourceGroup     = $_.ResourceGroupName
-            Subnet            = $_.Subnet.Id.Split('/')[-1]
+            Subnet            = if ($_.Subnet -and $_.Subnet.Id) { $_.Subnet.Id.Split('/')[-1] } else { $null }
             PrivateLinkService = ($_.PrivateLinkServiceConnections.Name -join ', ')
         })
     }
@@ -675,7 +708,7 @@ foreach ($sub in $subscriptions) {
                     Name          = $_.Name
                     ResourceGroup = $_.ResourceGroupName
                     Location      = $_.Location
-                    SKU           = $_.Sku.Name
+                    SKU           = if ($_.Sku) { $_.Sku.Name } else { $null }
                 })
             }
     } catch {}
@@ -716,7 +749,7 @@ foreach ($sub in $subscriptions) {
                 Subscription  = $subName
                 Name          = $_.ManagedInstanceName
                 ResourceGroup = $_.ResourceGroupName
-                SKU           = $_.Sku.Name
+                SKU           = if ($_.Sku) { $_.Sku.Name } else { $null }
                 vCores        = $_.VCores
                 StorageGB     = $_.StorageSizeInGB
                 LicenseType   = $_.LicenseType
@@ -777,7 +810,7 @@ foreach ($sub in $subscriptions) {
                 Subscription  = $subName
                 Name          = $_.Name
                 ResourceGroup = $_.ResourceGroupName
-                SKU           = $_.Sku.Name
+                SKU           = if ($_.Sku) { $_.Sku.Name } else { $null }
                 Size          = $_.Size
                 ShardCount    = $_.ShardCount
                 NonSslPort    = $_.EnableNonSslPort
@@ -798,7 +831,7 @@ foreach ($sub in $subscriptions) {
                 Name          = $_.Name
                 ResourceGroup = $_.ResourceGroupName
                 Location      = $_.Location
-                SKU           = $_.Sku.Name
+                SKU           = if ($_.Sku) { $_.Sku.Name } else { $null }
             })
         }
     } catch {}
@@ -811,7 +844,7 @@ foreach ($sub in $subscriptions) {
                 Name          = $_.Name
                 ResourceGroup = $_.ResourceGroupName
                 Location      = $_.Location
-                SKU           = $_.Sku.Name
+                SKU           = if ($_.Sku) { $_.Sku.Name } else { $null }
             })
         }
     } catch {}
@@ -824,7 +857,7 @@ foreach ($sub in $subscriptions) {
                 Name          = $_.Name
                 ResourceGroup = $_.ResourceGroupName
                 Location      = $_.Location
-                SKU           = $_.Sku.Name
+                SKU           = if ($_.Sku) { $_.Sku.Name } else { $null }
             })
         }
     } catch {}
@@ -842,8 +875,8 @@ foreach ($sub in $subscriptions) {
                 ResourceGroup = $_.ResourceGroupName
                 K8sVersion    = $_.KubernetesVersion
                 NodePools     = $_.AgentPoolProfiles.Count
-                NetworkPlugin = $_.NetworkProfile.NetworkPlugin
-                NetworkPolicy = $_.NetworkProfile.NetworkPolicy
+                NetworkPlugin = if ($_.NetworkProfile) { $_.NetworkProfile.NetworkPlugin } else { $null }
+                NetworkPolicy = if ($_.NetworkProfile) { $_.NetworkProfile.NetworkPolicy } else { $null }
                 RBAC          = $_.EnableRBAC
             })
             $_.AgentPoolProfiles | ForEach-Object {
@@ -1062,7 +1095,7 @@ foreach ($sub in $subscriptions) {
                 Impact       = $_.Impact
                 Problem      = $_.ShortDescription.Problem
                 Solution     = $_.ShortDescription.Solution
-                Resource     = $_.ResourceMetadata.ResourceId.Split('/')[-1]
+                Resource     = if ($_.ResourceMetadata -and $_.ResourceMetadata.ResourceId) { $_.ResourceMetadata.ResourceId.Split('/')[-1] } else { $null }
             })
         }
         $advisorRecs | Where-Object { $_.Category -eq 'Cost' } | ForEach-Object {
@@ -1071,7 +1104,7 @@ foreach ($sub in $subscriptions) {
                 Impact       = $_.Impact
                 Problem      = $_.ShortDescription.Problem
                 Solution     = $_.ShortDescription.Solution
-                Resource     = $_.ResourceMetadata.ResourceId.Split('/')[-1]
+                Resource     = if ($_.ResourceMetadata -and $_.ResourceMetadata.ResourceId) { $_.ResourceMetadata.ResourceId.Split('/')[-1] } else { $null }
             })
         }
     } catch {}
@@ -1479,6 +1512,21 @@ $executiveSummary.GetEnumerator() | ForEach-Object {
 } | Export-Csv "$OutputPath/00_ExecutiveSummary.csv" -NoTypeInformation
 
 Export-SafeCsv $summaryData "00_ExportManifest.csv"
+Export-SafeCsv $sectionErrors "00_SectionErrors.csv"
+Export-SafeCsv $sectionTimings "00_SectionTimings.csv"
+
+# Run summary JSON
+$runSummary = [ordered]@{
+    StartTime       = $startTime.ToString('o')
+    EndTime         = (Get-Date).ToString('o')
+    ElapsedMinutes  = [math]::Round(((Get-Date) - $startTime).TotalMinutes, 1)
+    Subscriptions   = $subscriptions.Count
+    TotalErrors     = @($sectionErrors).Count
+    SectionTimings  = @($sectionTimings)
+    SectionErrors   = @($sectionErrors)
+}
+$runSummary | ConvertTo-Json -Depth 5 | Set-Content "$OutputPath/Assessment-RunSummary.json"
+Write-Host "    ✓ Run summary → Assessment-RunSummary.json" -ForegroundColor Green
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # BUNDLE INTO ZIP
@@ -1574,3 +1622,6 @@ if ($isCloudShell) {
 "@ -ForegroundColor DarkGray
 }
 Write-Host ""
+
+# Stop transcript logging
+try { Stop-Transcript | Out-Null } catch {}

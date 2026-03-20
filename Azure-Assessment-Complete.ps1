@@ -111,9 +111,34 @@ if ($SubscriptionId) {
 }
 Write-Host "  Subscriptions to assess: $($subscriptions.Count)" -ForegroundColor Green
 
-# Export subscription list
-$subscriptions | Select-Object Name, Id, State, TenantId |
-    Export-Csv "$OutputPath/Subscriptions.csv" -NoTypeInformation
+# Export subscription list with offer/agreement type
+$subscriptions | ForEach-Object {
+    $quotaId = $_.SubscriptionPolicies.QuotaId
+    $offerType = switch -Wildcard ($quotaId) {
+        'EnterpriseAgreement*'    { 'EA' }
+        '*MS-AZR-0017P*'          { 'EA' }
+        '*MS-AZR-0145P*'          { 'CSP' }
+        '*MS-AZR-0146P*'          { 'CSP' }
+        '*MS-AZR-0003P*'          { 'PAYG' }
+        '*MS-AZR-0023P*'          { 'PAYG' }
+        'MicrosoftCustomer*'      { 'MCA' }
+        '*MS-AZR-0015P*'          { 'MCA' }
+        'Sponsored*'              { 'Sponsored' }
+        '*MSDN*'                  { 'MSDN' }
+        '*MS-AZR-0063P*'          { 'Free Trial' }
+        '*MicrosoftPartner*'      { 'MPN' }
+        default                   { 'Unknown' }
+    }
+    [PSCustomObject]@{
+        Name          = $_.Name
+        Id            = $_.Id
+        State         = $_.State
+        TenantId      = $_.TenantId
+        QuotaId       = $quotaId
+        SpendingLimit = $_.SubscriptionPolicies.SpendingLimit
+        OfferType     = $offerType
+    }
+} | Export-Csv "$OutputPath/Subscriptions.csv" -NoTypeInformation
 #endregion
 
 # ═══════════════════════════════════════════════════════════════════════════════

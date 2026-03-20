@@ -164,28 +164,30 @@ New-AzStorageBlobSASToken -Container 'assessments' -Blob 'assessment.zip' -Conte
 
 ### Assessment Script (read-only)
 
-| Role | Scope | Why |
-|------|-------|-----|
-| **Reader** | All target subscriptions | Enumerate all resources, VMs, networking, databases, etc. |
-| **Reader** | Management Group (root) | `Get-AzManagementGroup` hierarchy |
-| **Security Reader** | All target subscriptions | Defender pricing, Secure Score, security alerts, policy state |
-| **Key Vault Reader** or Access Policy `List` | Each Key Vault | List secrets/certificates and check expiry dates |
-| **Monitoring Reader** | All target subscriptions | Read metrics (CPU, DTU), diagnostic settings, alert rules, action groups |
-| **Billing Reader** | Subscription or Enrollment | `Get-AzConsumptionUsageDetail`, budgets, reservations |
-| **Directory Reader** *(Entra ID role)* | Tenant | *Optional* — only needed for Section 15 (Entra users, Conditional Access, licenses via Microsoft Graph) |
+The assessment script is entirely read-only — it never creates, modifies, or deletes resources. Each role below grants access to a specific category of data that the script collects.
+
+| Role | Scope | What it unlocks | Detailed reason |
+|------|-------|-----------------|-----------------|
+| **Reader** | All target subscriptions | Core resource inventory across all 19 assessment categories | The script calls 40+ `Get-Az*` cmdlets (`Get-AzVM`, `Get-AzVirtualNetwork`, `Get-AzSqlServer`, `Get-AzDisk`, `Get-AzAksCluster`, `Get-AzStorageAccount`, etc.) to enumerate every resource type. Without Reader, the script cannot see any resources and produces empty CSVs. This single role powers Sections 01–12 and parts of 15–18. |
+| **Reader** | Management Group (root) | Management Group hierarchy (Section 19) | `Get-AzManagementGroup` requires read access at the management group scope — subscription-level Reader is not sufficient. The script walks the full management group tree to map your tenant's organizational hierarchy. If unavailable, only Section 19 is skipped. |
+| **Security Reader** | All target subscriptions | Defender for Cloud posture, Secure Score, and active security alerts (Section 13) | The script calls `Get-AzSecurityPricing` to audit which Defender plans are enabled (VMs, SQL, Storage, etc.), `Get-AzSecuritySecureScore` to capture your overall security score, and `Get-AzSecurityAlert` to export active threat alerts. These APIs are behind the Security resource provider and require Security Reader — standard Reader cannot access them. |
+| **Key Vault Reader** or Access Policy `List` | Each Key Vault | Secrets and certificates approaching expiry (Section 13) | The script calls `Get-AzKeyVaultSecret` and `Get-AzKeyVaultCertificate` on every vault to identify secrets and certificates expiring within 30/60/90 days. Key Vault has its own access control plane — subscription Reader can list vaults but cannot read their contents. You need either the Key Vault Reader RBAC role (if using RBAC authorization) or a Key Vault access policy granting `List` permission for secrets and certificates. |
+| **Monitoring Reader** | All target subscriptions | VM CPU/memory metrics, diagnostic settings, alert rules, and action groups (Sections 02, 08, 16) | `Get-AzMetric` retrieves CPU percentage (and DTU for SQL) over the configured lookback window to identify idle, underutilized, and right-sizing candidates. `Get-AzDiagnosticSetting` checks whether each resource is sending logs/metrics to Log Analytics. `Get-AzMetricAlertRuleV2` and `Get-AzActionGroup` audit your alerting coverage. These Monitor APIs require Monitoring Reader — standard Reader cannot query metric data or alert configurations. |
+| **Billing Reader** | Subscription or Enrollment | Cost breakdown by service, budgets, and reservation utilization (Section 14) | `Get-AzConsumptionUsageDetail` pulls the last 30 days of spend grouped by service to show where money is going. `Get-AzConsumptionBudget` lists configured budgets and their thresholds. `Get-AzReservation` checks RI utilization so you can spot underused reservations. Consumption and billing APIs are access-controlled separately from resource data — without Billing Reader, Section 14 (Cost) is skipped entirely. |
+| **Directory Reader** *(Entra ID role)* | Tenant | *Optional* — Entra ID users, Conditional Access policies, app registrations, and license counts | Only needed if you run the Microsoft Graph sections. The script uses `Get-MgUser`, `Get-MgIdentityConditionalAccessPolicy`, and `Get-MgApplication` to audit identity posture. This is an Entra ID directory role (not an Azure RBAC role) and must be assigned in the Entra admin center. If skipped, all other assessment sections still run normally. |
 
 > **Shortcut:** The built-in **Reader** + **Security Reader** + **Monitoring Reader** + **Billing Reader** roles at subscription scope cover everything except Key Vault secrets and Entra ID. For a quick engagement, request **Reader** at the management group root and add the others at subscription scope.
 
 ### Prep Script (makes changes)
 
-The Prep script installs agents and creates resources, so it needs write access:
+The Prep script installs monitoring agents and creates resources so that the assessment script can collect utilization metrics. It requires write access. Each role below covers a specific set of changes the script makes.
 
-| Role | Scope | Why |
-|------|-------|-----|
-| **Contributor** | All target subscriptions | Create Log Analytics workspace, install VM extensions (AMA, Dependency Agent), create Data Collection Rules and associations |
-| **Monitoring Contributor** | All target subscriptions | Create/modify diagnostic settings on resources, enable VM Insights solution |
-| **Virtual Machine Contributor** | All target subscriptions | Enable system-assigned managed identity on VMs (required for AMA) |
-| **Log Analytics Contributor** | Workspace resource group | Create workspace, enable solutions |
+| Role | Scope | What it unlocks | Detailed reason |
+|------|-------|-----------------|-----------------|
+| **Contributor** | All target subscriptions | Resource creation, agent installation, Data Collection Rules, and provider registration | The script calls `New-AzResourceGroup` and `New-AzOperationalInsightsWorkspace` to create the Log Analytics workspace that receives all monitoring data. It uses `Set-AzVMExtension` to deploy Azure Monitor Agent (AMA) and Dependency Agent to every VM. It makes REST API calls (`PUT .../dataCollectionRules/...`) to create Windows and Linux performance counter DCRs (CPU, memory, disk, network at 60-second intervals) and associate them with VMs. Finally, `Register-AzResourceProvider` ensures Microsoft.Insights and Microsoft.AlertsManagement are registered. Contributor is the broadest role here and covers all of these operations. |
+| **Monitoring Contributor** | All target subscriptions | Diagnostic settings on 16 resource types and the VMInsights solution | `New-AzDiagnosticSetting` is called for each resource type (VMs, SQL, Storage, NSGs, Key Vaults, etc.) to route platform logs and metrics to the Log Analytics workspace. `Set-AzOperationalInsightsIntelligencePack` enables the VMInsights solution on the workspace for connection mapping. These are Monitor resource provider write operations that require Monitoring Contributor specifically — Contributor alone may not include write access to diagnostic settings in all configurations. |
+| **Virtual Machine Contributor** | All target subscriptions | System-assigned managed identity and VM extension installation | `Update-AzVM -IdentityType SystemAssigned` enables the system-assigned managed identity on each VM — this is a prerequisite for Azure Monitor Agent, which authenticates using this identity instead of certificates or keys. `Set-AzVMExtension` then installs the AMA and Dependency Agent extensions. Without this role, VMs cannot authenticate to send metrics and the monitoring pipeline fails silently. |
+| **Log Analytics Contributor** | Workspace resource group | Workspace creation and solution enablement | `New-AzOperationalInsightsWorkspace` creates the workspace (SKU: PerGB2018, 30-day retention) that serves as the central destination for all collected metrics and logs. `Set-AzOperationalInsightsIntelligencePack` enables the VMInsights intelligence pack. This role is scoped narrowly to just the workspace resource group — it does not grant write access to other resources. |
 
 > **Shortcut:** **Contributor** at subscription scope covers all of the above. If you want least-privilege, use the individual roles listed.
 
@@ -195,6 +197,13 @@ If running the Entra ID sections, connect with:
 ```powershell
 Connect-MgGraph -Scopes 'User.Read.All','Policy.Read.All','Organization.Read.All','Application.Read.All'
 ```
+
+| Scope | Why |
+|-------|-----|
+| `User.Read.All` | Enumerate all Entra ID users, their sign-in status, MFA registration, and license assignments for identity coverage analysis |
+| `Policy.Read.All` | Read Conditional Access policies to audit MFA enforcement, device compliance requirements, and session controls |
+| `Organization.Read.All` | Read tenant-level configuration including verified domains, directory sync status, and organization settings |
+| `Application.Read.All` | List app registrations and service principals to identify apps with expiring credentials or excessive permissions |
 
 ---
 

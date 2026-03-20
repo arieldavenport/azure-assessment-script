@@ -769,64 +769,76 @@ foreach ($sub in $subscriptions) {
     } catch {}
 
     Write-SubSection "Cosmos DB"
-    Get-AzCosmosDBAccount -ErrorAction SilentlyContinue | ForEach-Object {
-        $null = $allCosmosDB.Add([PSCustomObject]@{
-            Subscription             = $subName
-            Name                     = $_.Name
-            ResourceGroup            = $_.ResourceGroupName
-            Kind                     = $_.Kind
-            ConsistencyLevel         = $_.ConsistencyPolicy.DefaultConsistencyLevel
-            MultipleWriteLocations   = $_.EnableMultipleWriteLocations
-            Locations                = ($_.Locations.LocationName -join ', ')
-        })
+    Get-AzResource -ResourceType 'Microsoft.DocumentDB/databaseAccounts' -ErrorAction SilentlyContinue | ForEach-Object {
+        $acct = Get-AzCosmosDBAccount -ResourceGroupName $_.ResourceGroupName -Name $_.Name -ErrorAction SilentlyContinue
+        if ($acct) {
+            $null = $allCosmosDB.Add([PSCustomObject]@{
+                Subscription             = $subName
+                Name                     = $acct.Name
+                ResourceGroup            = $acct.ResourceGroupName
+                Kind                     = $acct.Kind
+                ConsistencyLevel         = $acct.ConsistencyPolicy.DefaultConsistencyLevel
+                MultipleWriteLocations   = $acct.EnableMultipleWriteLocations
+                Locations                = ($acct.Locations.LocationName -join ', ')
+            })
+        }
     }
 
     Write-SubSection "MySQL Flexible Servers"
     try {
-        Get-AzMySqlFlexibleServer -ErrorAction SilentlyContinue | ForEach-Object {
-            $null = $allMySQL.Add([PSCustomObject]@{
-                Subscription  = $subName
-                Name          = $_.Name
-                ResourceGroup = $_.ResourceGroupName
-                SKU           = $_.SkuName
-                Tier          = $_.SkuTier
-                StorageGB     = $_.StorageSizeGb
-                Version       = $_.Version
-                State         = $_.State
-            })
+        Get-AzResource -ResourceType 'Microsoft.DBforMySQL/flexibleServers' -ErrorAction SilentlyContinue | ForEach-Object {
+            $srv = Get-AzMySqlFlexibleServer -ResourceGroupName $_.ResourceGroupName -Name $_.Name -ErrorAction SilentlyContinue
+            if ($srv) {
+                $null = $allMySQL.Add([PSCustomObject]@{
+                    Subscription  = $subName
+                    Name          = $srv.Name
+                    ResourceGroup = $srv.ResourceGroupName
+                    SKU           = $srv.SkuName
+                    Tier          = $srv.SkuTier
+                    StorageGB     = $srv.StorageSizeGb
+                    Version       = $srv.Version
+                    State         = $srv.State
+                })
+            }
         }
     } catch {}
 
     Write-SubSection "PostgreSQL Flexible Servers"
     try {
-        Get-AzPostgreSqlFlexibleServer -ErrorAction SilentlyContinue | ForEach-Object {
-            $null = $allPostgreSQL.Add([PSCustomObject]@{
-                Subscription  = $subName
-                Name          = $_.Name
-                ResourceGroup = $_.ResourceGroupName
-                SKU           = $_.SkuName
-                Tier          = $_.SkuTier
-                StorageGB     = $_.StorageSizeGb
-                Version       = $_.Version
-                State         = $_.State
-            })
+        Get-AzResource -ResourceType 'Microsoft.DBforPostgreSQL/flexibleServers' -ErrorAction SilentlyContinue | ForEach-Object {
+            $srv = Get-AzPostgreSqlFlexibleServer -ResourceGroupName $_.ResourceGroupName -Name $_.Name -ErrorAction SilentlyContinue
+            if ($srv) {
+                $null = $allPostgreSQL.Add([PSCustomObject]@{
+                    Subscription  = $subName
+                    Name          = $srv.Name
+                    ResourceGroup = $srv.ResourceGroupName
+                    SKU           = $srv.SkuName
+                    Tier          = $srv.SkuTier
+                    StorageGB     = $srv.StorageSizeGb
+                    Version       = $srv.Version
+                    State         = $srv.State
+                })
+            }
         }
     } catch {}
 
     Write-SubSection "Redis Cache"
     try {
-        Get-AzRedisCache -ErrorAction SilentlyContinue | ForEach-Object {
-            $null = $allRedisCache.Add([PSCustomObject]@{
-                Subscription  = $subName
-                Name          = $_.Name
-                ResourceGroup = $_.ResourceGroupName
-                SKU           = if ($_.Sku) { $_.Sku.Name } else { $null }
-                Size          = $_.Size
-                ShardCount    = $_.ShardCount
-                NonSslPort    = $_.EnableNonSslPort
-                MinTLS        = $_.MinimumTlsVersion
-                Location      = $_.Location
-            })
+        Get-AzResource -ResourceType 'Microsoft.Cache/Redis' -ErrorAction SilentlyContinue | ForEach-Object {
+            $cache = Get-AzRedisCache -ResourceGroupName $_.ResourceGroupName -Name $_.Name -ErrorAction SilentlyContinue
+            if ($cache) {
+                $null = $allRedisCache.Add([PSCustomObject]@{
+                    Subscription  = $subName
+                    Name          = $cache.Name
+                    ResourceGroup = $cache.ResourceGroupName
+                    SKU           = if ($cache.Sku) { $cache.Sku.Name } else { $null }
+                    Size          = $cache.Size
+                    ShardCount    = $cache.ShardCount
+                    NonSslPort    = $cache.EnableNonSslPort
+                    MinTLS        = $cache.MinimumTlsVersion
+                    Location      = $cache.Location
+                })
+            }
         }
     } catch {}
     #endregion
@@ -877,31 +889,33 @@ foreach ($sub in $subscriptions) {
     Write-Section "10. Containers"
     Write-SubSection "AKS Clusters"
     try {
-        Get-AzAksCluster -ErrorAction SilentlyContinue | ForEach-Object {
-            $cluster = $_
-            $null = $allAKS.Add([PSCustomObject]@{
-                Subscription  = $subName
-                Name          = $_.Name
-                ResourceGroup = $_.ResourceGroupName
-                K8sVersion    = $_.KubernetesVersion
-                NodePools     = $_.AgentPoolProfiles.Count
-                NetworkPlugin = if ($_.NetworkProfile) { $_.NetworkProfile.NetworkPlugin } else { $null }
-                NetworkPolicy = if ($_.NetworkProfile) { $_.NetworkProfile.NetworkPolicy } else { $null }
-                RBAC          = $_.EnableRBAC
-            })
-            $_.AgentPoolProfiles | ForEach-Object {
-                $null = $allAKSNodePools.Add([PSCustomObject]@{
-                    Subscription = $subName
-                    Cluster      = $cluster.Name
-                    Pool         = $_.Name
-                    VMSize       = $_.VmSize
-                    Count        = $_.Count
-                    MinCount     = $_.MinCount
-                    MaxCount     = $_.MaxCount
-                    AutoScale    = $_.EnableAutoScaling
-                    OsType       = $_.OsType
-                    Mode         = $_.Mode
+        Get-AzResource -ResourceType 'Microsoft.ContainerService/managedClusters' -ErrorAction SilentlyContinue | ForEach-Object {
+            $cluster = Get-AzAksCluster -ResourceGroupName $_.ResourceGroupName -Name $_.Name -ErrorAction SilentlyContinue
+            if ($cluster) {
+                $null = $allAKS.Add([PSCustomObject]@{
+                    Subscription  = $subName
+                    Name          = $cluster.Name
+                    ResourceGroup = $cluster.ResourceGroupName
+                    K8sVersion    = $cluster.KubernetesVersion
+                    NodePools     = $cluster.AgentPoolProfiles.Count
+                    NetworkPlugin = if ($cluster.NetworkProfile) { $cluster.NetworkProfile.NetworkPlugin } else { $null }
+                    NetworkPolicy = if ($cluster.NetworkProfile) { $cluster.NetworkProfile.NetworkPolicy } else { $null }
+                    RBAC          = $cluster.EnableRBAC
                 })
+                $cluster.AgentPoolProfiles | ForEach-Object {
+                    $null = $allAKSNodePools.Add([PSCustomObject]@{
+                        Subscription = $subName
+                        Cluster      = $cluster.Name
+                        Pool         = $_.Name
+                        VMSize       = $_.VmSize
+                        Count        = $_.Count
+                        MinCount     = $_.MinCount
+                        MaxCount     = $_.MaxCount
+                        AutoScale    = $_.EnableAutoScaling
+                        OsType       = $_.OsType
+                        Mode         = $_.Mode
+                    })
+                }
             }
         }
     } catch {}
@@ -932,16 +946,19 @@ foreach ($sub in $subscriptions) {
 
     Write-SubSection "Container Registries"
     try {
-        Get-AzContainerRegistry -ErrorAction SilentlyContinue | ForEach-Object {
-            $null = $allContainerRegistries.Add([PSCustomObject]@{
-                Subscription  = $subName
-                Name          = $_.Name
-                ResourceGroup = $_.ResourceGroupName
-                SKU           = $_.SkuName
-                AdminEnabled  = $_.AdminUserEnabled
-                LoginServer   = $_.LoginServer
-                Location      = $_.Location
-            })
+        Get-AzResource -ResourceType 'Microsoft.ContainerRegistry/registries' -ErrorAction SilentlyContinue | ForEach-Object {
+            $reg = Get-AzContainerRegistry -ResourceGroupName $_.ResourceGroupName -Name $_.Name -ErrorAction SilentlyContinue
+            if ($reg) {
+                $null = $allContainerRegistries.Add([PSCustomObject]@{
+                    Subscription  = $subName
+                    Name          = $reg.Name
+                    ResourceGroup = $reg.ResourceGroupName
+                    SKU           = $reg.SkuName
+                    AdminEnabled  = $reg.AdminUserEnabled
+                    LoginServer   = $reg.LoginServer
+                    Location      = $reg.Location
+                })
+            }
         }
     } catch {}
     #endregion
@@ -1028,16 +1045,17 @@ foreach ($sub in $subscriptions) {
     } catch {}
 
     Write-SubSection "Key Vaults"
-    Get-AzKeyVault -ErrorAction SilentlyContinue | ForEach-Object {
-        $vault = $_
+    Get-AzResource -ResourceType 'Microsoft.KeyVault/vaults' -ErrorAction SilentlyContinue | ForEach-Object {
+        $vault = Get-AzKeyVault -VaultName $_.Name -ResourceGroupName $_.ResourceGroupName -ErrorAction SilentlyContinue
+        if ($vault) {
         $null = $allKeyVaults.Add([PSCustomObject]@{
             Subscription    = $subName
-            VaultName       = $_.VaultName
-            ResourceGroup   = $_.ResourceGroupName
-            Location        = $_.Location
-            SoftDelete      = $_.EnableSoftDelete
-            PurgeProtection = $_.EnablePurgeProtection
-            SKU             = $_.Sku
+            VaultName       = $vault.VaultName
+            ResourceGroup   = $vault.ResourceGroupName
+            Location        = $vault.Location
+            SoftDelete      = $vault.EnableSoftDelete
+            PurgeProtection = $vault.EnablePurgeProtection
+            SKU             = $vault.Sku
         })
 
         # Check for expiring secrets/certs
@@ -1067,6 +1085,7 @@ foreach ($sub in $subscriptions) {
                     })
                 }
         } catch {}
+        }
     }
 
     Write-SubSection "Policy Compliance"
@@ -1169,7 +1188,9 @@ foreach ($sub in $subscriptions) {
     #region ── 15. Backup & DR ────────────────────────────────────────────────
     Write-Section "15. Backup & Disaster Recovery"
     Write-SubSection "Recovery Services Vaults & Backup Items"
-    $vaults = Get-AzRecoveryServicesVault -ErrorAction SilentlyContinue
+    $vaults = Get-AzResource -ResourceType 'Microsoft.RecoveryServices/vaults' -ErrorAction SilentlyContinue | ForEach-Object {
+        Get-AzRecoveryServicesVault -ResourceGroupName $_.ResourceGroupName -Name $_.Name -ErrorAction SilentlyContinue
+    }
     $backedUpVMNames = @()
     foreach ($vault in $vaults) {
         $null = $allRecoveryVaults.Add([PSCustomObject]@{
@@ -1213,15 +1234,18 @@ foreach ($sub in $subscriptions) {
     #region ── 16. Monitoring ─────────────────────────────────────────────────
     Write-Section "16. Monitoring & Log Analytics"
     Write-SubSection "Log Analytics Workspaces"
-    Get-AzOperationalInsightsWorkspace -ErrorAction SilentlyContinue | ForEach-Object {
-        $null = $allLAWorkspaces.Add([PSCustomObject]@{
-            Subscription  = $subName
-            Name          = $_.Name
-            ResourceGroup = $_.ResourceGroupName
-            SKU           = $_.Sku
-            RetentionDays = $_.RetentionInDays
-            DailyCapGB    = $_.WorkspaceCapping.DailyQuotaGb
-        })
+    Get-AzResource -ResourceType 'Microsoft.OperationalInsights/workspaces' -ErrorAction SilentlyContinue | ForEach-Object {
+        $ws = Get-AzOperationalInsightsWorkspace -ResourceGroupName $_.ResourceGroupName -Name $_.Name -ErrorAction SilentlyContinue
+        if ($ws) {
+            $null = $allLAWorkspaces.Add([PSCustomObject]@{
+                Subscription  = $subName
+                Name          = $ws.Name
+                ResourceGroup = $ws.ResourceGroupName
+                SKU           = $ws.Sku
+                RetentionDays = $ws.RetentionInDays
+                DailyCapGB    = $ws.WorkspaceCapping.DailyQuotaGb
+            })
+        }
     }
 
     Write-SubSection "Diagnostic Settings Coverage"
@@ -1250,30 +1274,36 @@ foreach ($sub in $subscriptions) {
 
     Write-SubSection "Alert Rules"
     try {
-        Get-AzMetricAlertRuleV2 -ErrorAction SilentlyContinue | ForEach-Object {
-            $null = $allAlertRules.Add([PSCustomObject]@{
-                Subscription  = $subName
-                Name          = $_.Name
-                ResourceGroup = $_.ResourceGroupName
-                Severity      = $_.Severity
-                Enabled       = $_.Enabled
-                TargetResource = $_.TargetResourceId.Split('/')[-1]
-            })
+        Get-AzResource -ResourceType 'Microsoft.Insights/metricAlerts' -ErrorAction SilentlyContinue | ForEach-Object {
+            $alert = Get-AzMetricAlertRuleV2 -ResourceGroupName $_.ResourceGroupName -Name $_.Name -ErrorAction SilentlyContinue
+            if ($alert) {
+                $null = $allAlertRules.Add([PSCustomObject]@{
+                    Subscription  = $subName
+                    Name          = $alert.Name
+                    ResourceGroup = $alert.ResourceGroupName
+                    Severity      = $alert.Severity
+                    Enabled       = $alert.Enabled
+                    TargetResource = $alert.TargetResourceId.Split('/')[-1]
+                })
+            }
         }
     } catch {}
 
     Write-SubSection "Action Groups"
     try {
-        Get-AzActionGroup -ErrorAction SilentlyContinue | ForEach-Object {
-            $null = $allActionGroups.Add([PSCustomObject]@{
-                Subscription  = $subName
-                Name          = $_.Name
-                ResourceGroup = $_.ResourceGroupName
-                Enabled       = $_.Enabled
-                EmailReceivers = ($_.EmailReceivers.Name -join ', ')
-                SMSReceivers   = ($_.SmsReceivers.Name -join ', ')
-                WebhookReceivers = ($_.WebhookReceivers.Name -join ', ')
-            })
+        Get-AzResource -ResourceType 'Microsoft.Insights/actionGroups' -ErrorAction SilentlyContinue | ForEach-Object {
+            $ag = Get-AzActionGroup -ResourceGroupName $_.ResourceGroupName -Name $_.Name -ErrorAction SilentlyContinue
+            if ($ag) {
+                $null = $allActionGroups.Add([PSCustomObject]@{
+                    Subscription  = $subName
+                    Name          = $ag.Name
+                    ResourceGroup = $ag.ResourceGroupName
+                    Enabled       = $ag.Enabled
+                    EmailReceivers = ($ag.EmailReceivers.Name -join ', ')
+                    SMSReceivers   = ($ag.SmsReceivers.Name -join ', ')
+                    WebhookReceivers = ($ag.WebhookReceivers.Name -join ', ')
+                })
+            }
         }
     } catch {}
     #endregion
@@ -1327,16 +1357,19 @@ foreach ($sub in $subscriptions) {
     Write-SubSection "Azure Arc Machines"
     try {
         if (Test-ModuleAvailable 'Az.ConnectedMachine') {
-            Get-AzConnectedMachine -ErrorAction SilentlyContinue | ForEach-Object {
-                $null = $allArcMachines.Add([PSCustomObject]@{
-                    Subscription     = $subName
-                    Name             = $_.Name
-                    ResourceGroup    = $_.ResourceGroupName
-                    OS               = $_.OsName
-                    Status           = $_.Status
-                    AgentVersion     = $_.AgentVersion
-                    LastStatusChange = $_.LastStatusChange
-                })
+            Get-AzResource -ResourceType 'Microsoft.HybridCompute/machines' -ErrorAction SilentlyContinue | ForEach-Object {
+                $machine = Get-AzConnectedMachine -ResourceGroupName $_.ResourceGroupName -Name $_.Name -ErrorAction SilentlyContinue
+                if ($machine) {
+                    $null = $allArcMachines.Add([PSCustomObject]@{
+                        Subscription     = $subName
+                        Name             = $machine.Name
+                        ResourceGroup    = $machine.ResourceGroupName
+                        OS               = $machine.OsName
+                        Status           = $machine.Status
+                        AgentVersion     = $machine.AgentVersion
+                        LastStatusChange = $machine.LastStatusChange
+                    })
+                }
             }
         }
     } catch {}

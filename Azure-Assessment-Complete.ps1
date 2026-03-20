@@ -636,7 +636,7 @@ foreach ($sub in $subscriptions) {
 
     Write-SubSection "VPN Gateways"
     Get-AzResource -ResourceType 'Microsoft.Network/virtualNetworkGateways' -ErrorAction SilentlyContinue | ForEach-Object {
-        $gw = Get-AzVirtualNetworkGateway -Name $_.Name -ResourceGroupName $_.ResourceGroupName -ErrorAction SilentlyContinue
+        $gw = Get-AzVirtualNetworkGateway -ResourceId $_.ResourceId -ErrorAction SilentlyContinue
         if ($gw) {
             $null = $allVPNGateways.Add([PSCustomObject]@{
                 Subscription  = $subName

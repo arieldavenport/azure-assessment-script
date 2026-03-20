@@ -95,6 +95,7 @@ function Get-MetricSafe {
             -StartTime $metricsStart `
             -EndTime $endTime `
             -AggregationType $Aggregation `
+            -WarningAction SilentlyContinue `
             -ErrorAction SilentlyContinue
         return $metric
     } catch { return $null }

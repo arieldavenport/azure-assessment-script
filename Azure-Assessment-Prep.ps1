@@ -329,41 +329,37 @@ function Invoke-Option4_InstallAMA {
 
         # Enable system-assigned managed identity if not already
         if (-not $vm.Identity -or $vm.Identity.Type -notmatch 'SystemAssigned') {
-            if ($PSCmdlet.ShouldProcess($vm.Name, 'Enable system-assigned managed identity')) {
-                Write-Host "    Enabling system-assigned managed identity..." -ForegroundColor Yellow
-                Update-AzVM -ResourceGroupName $vm.ResourceGroupName -VM $vm -IdentityType SystemAssigned -ErrorAction SilentlyContinue | Out-Null
-            }
+            Write-Host "    Enabling system-assigned managed identity..." -ForegroundColor Yellow
+            Update-AzVM -ResourceGroupName $vm.ResourceGroupName -VM $vm -IdentityType SystemAssigned -ErrorAction SilentlyContinue | Out-Null
         }
 
         $osType = if ($vm.StorageProfile -and $vm.StorageProfile.OsDisk) { $vm.StorageProfile.OsDisk.OsType } else { 'Linux' }
-        if ($PSCmdlet.ShouldProcess($vm.Name, "Install Azure Monitor Agent ($osType)")) {
-            if ($osType -eq 'Windows') {
-                Write-Host "    Installing AzureMonitorWindowsAgent..." -ForegroundColor Yellow
-                Set-AzVMExtension `
-                    -ResourceGroupName $vm.ResourceGroupName `
-                    -VMName $vm.Name `
-                    -Name 'AzureMonitorWindowsAgent' `
-                    -Publisher 'Microsoft.Azure.Monitor' `
-                    -ExtensionType 'AzureMonitorWindowsAgent' `
-                    -TypeHandlerVersion '1.0' `
-                    -Location $vm.Location `
-                    -EnableAutomaticUpgrade $true `
-                    -ErrorAction SilentlyContinue | Out-Null
-            } else {
-                Write-Host "    Installing AzureMonitorLinuxAgent..." -ForegroundColor Yellow
-                Set-AzVMExtension `
-                    -ResourceGroupName $vm.ResourceGroupName `
-                    -VMName $vm.Name `
-                    -Name 'AzureMonitorLinuxAgent' `
-                    -Publisher 'Microsoft.Azure.Monitor' `
-                    -ExtensionType 'AzureMonitorLinuxAgent' `
-                    -TypeHandlerVersion '1.0' `
-                    -Location $vm.Location `
-                    -EnableAutomaticUpgrade $true `
-                    -ErrorAction SilentlyContinue | Out-Null
-            }
-            Write-Host "    ✓ AMA extension deployed" -ForegroundColor Green
+        if ($osType -eq 'Windows') {
+            Write-Host "    Installing AzureMonitorWindowsAgent..." -ForegroundColor Yellow
+            Set-AzVMExtension `
+                -ResourceGroupName $vm.ResourceGroupName `
+                -VMName $vm.Name `
+                -Name 'AzureMonitorWindowsAgent' `
+                -Publisher 'Microsoft.Azure.Monitor' `
+                -ExtensionType 'AzureMonitorWindowsAgent' `
+                -TypeHandlerVersion '1.0' `
+                -Location $vm.Location `
+                -EnableAutomaticUpgrade $true `
+                -ErrorAction SilentlyContinue | Out-Null
+        } else {
+            Write-Host "    Installing AzureMonitorLinuxAgent..." -ForegroundColor Yellow
+            Set-AzVMExtension `
+                -ResourceGroupName $vm.ResourceGroupName `
+                -VMName $vm.Name `
+                -Name 'AzureMonitorLinuxAgent' `
+                -Publisher 'Microsoft.Azure.Monitor' `
+                -ExtensionType 'AzureMonitorLinuxAgent' `
+                -TypeHandlerVersion '1.0' `
+                -Location $vm.Location `
+                -EnableAutomaticUpgrade $true `
+                -ErrorAction SilentlyContinue | Out-Null
         }
+        Write-Host "    ✓ AMA extension deployed" -ForegroundColor Green
     }
     Write-Host "`n  AMA installation complete. Agents may take a few minutes to initialize." -ForegroundColor Cyan
 }

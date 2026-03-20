@@ -1262,7 +1262,7 @@ foreach ($sub in $subscriptions) {
     Get-AzResource -ErrorAction SilentlyContinue | Where-Object {
         $_.ResourceType -in $criticalTypes
     } | ForEach-Object {
-        $diag = Get-AzDiagnosticSetting -ResourceId $_.ResourceId -ErrorAction SilentlyContinue
+        $diag = Get-AzDiagnosticSetting -ResourceId $_.ResourceId -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
         $null = $allDiagSettings.Add([PSCustomObject]@{
             Subscription   = $subName
             Resource       = $_.Name

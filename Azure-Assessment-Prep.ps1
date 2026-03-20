@@ -186,7 +186,7 @@ function Invoke-Option1_CheckPosture {
     $withDiag = 0; $withoutDiag = 0
     $critResources = Get-AzResource -ErrorAction SilentlyContinue | Where-Object { $_.ResourceType -in $criticalTypes }
     foreach ($res in $critResources) {
-        $diag = Get-AzDiagnosticSetting -ResourceId $res.ResourceId -ErrorAction SilentlyContinue
+        $diag = Get-AzDiagnosticSetting -ResourceId $res.ResourceId -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
         if ($diag) { $withDiag++ } else { $withoutDiag++ }
     }
     Write-Host "    Critical resources with diagnostics:    $withDiag" -ForegroundColor Green
@@ -521,7 +521,7 @@ function Invoke-Option6_DiagnosticSettings {
     $needDiag = @()
 
     foreach ($res in $resources) {
-        $existing = Get-AzDiagnosticSetting -ResourceId $res.ResourceId -ErrorAction SilentlyContinue
+        $existing = Get-AzDiagnosticSetting -ResourceId $res.ResourceId -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
         if (-not $existing) { $needDiag += $res }
     }
 
@@ -543,14 +543,14 @@ function Invoke-Option6_DiagnosticSettings {
             # Get available diagnostic categories for this resource type
             $categories = Get-AzDiagnosticSettingCategory -ResourceId $res.ResourceId -ErrorAction SilentlyContinue
 
-            $logSettings = @()
-            $metricSettings = @()
+            $logSettings = [System.Collections.Generic.List[object]]::new()
+            $metricSettings = [System.Collections.Generic.List[object]]::new()
 
             foreach ($cat in $categories) {
                 if ($cat.CategoryType -eq 'Logs') {
-                    $logSettings += New-AzDiagnosticSettingLogSettingsObject -Category $cat.Name -Enabled $true
+                    $logSettings.Add((New-AzDiagnosticSettingLogSettingsObject -Category $cat.Name -Enabled $true))
                 } else {
-                    $metricSettings += New-AzDiagnosticSettingMetricSettingsObject -Category $cat.Name -Enabled $true
+                    $metricSettings.Add((New-AzDiagnosticSettingMetricSettingsObject -Category $cat.Name -Enabled $true))
                 }
             }
 
@@ -559,8 +559,8 @@ function Invoke-Option6_DiagnosticSettings {
                 ResourceId       = $res.ResourceId
                 WorkspaceId      = $wsId
             }
-            if ($logSettings)    { $params['Log']    = $logSettings }
-            if ($metricSettings) { $params['Metric'] = $metricSettings }
+            if ($logSettings.Count -gt 0)    { $params['Log']    = $logSettings }
+            if ($metricSettings.Count -gt 0) { $params['Metric'] = $metricSettings }
 
             New-AzDiagnosticSetting @params -ErrorAction Stop | Out-Null
             Write-Host "    ✓ $($res.Name) ($($res.ResourceType.Split('/')[-1]))" -ForegroundColor Green
@@ -739,7 +739,7 @@ function Invoke-OptionR_ReadinessReport {
     }
     $noDiag = 0
     foreach ($r in $critRes) {
-        $d = Get-AzDiagnosticSetting -ResourceId $r.ResourceId -ErrorAction SilentlyContinue
+        $d = Get-AzDiagnosticSetting -ResourceId $r.ResourceId -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
         if (-not $d) { $noDiag++ }
     }
     $null = $report.Add([PSCustomObject]@{

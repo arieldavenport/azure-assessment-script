@@ -6,19 +6,38 @@ Two PowerShell scripts for running a comprehensive Azure environment assessment.
 
 ---
 
-## Quick Start
+## Quick Start — Run Directly from Azure Cloud Shell
 
+Open [Azure Cloud Shell](https://shell.azure.com) (PowerShell), then copy-paste:
+
+```powershell
+# Step 1 — Prep (run 7-14 days before assessment)
+irm https://raw.githubusercontent.com/arieldavenport/azure-assessment-script/main/Azure-Assessment-Prep.ps1 | iex
+
+# Step 2 — Assessment (run after metrics have accumulated)
+irm https://raw.githubusercontent.com/arieldavenport/azure-assessment-script/main/Azure-Assessment-Complete.ps1 -OutFile Azure-Assessment-Complete.ps1
+.\Azure-Assessment-Complete.ps1
+
+# Step 3 — Download the zip
+download ~/AzureAssessment_yyyyMMdd-HHmm.zip
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  1. Run Prep script (7-14 days before assessment)           │
-│     .\Azure-Assessment-Prep.ps1                             │
-│                                                             │
-│  2. Run Assessment script                                   │
-│     .\Azure-Assessment-Complete.ps1                         │
-│                                                             │
-│  3. Download the zip                                        │
-│     download ~/AzureAssessment_yyyyMMdd-HHmm.zip            │
-└─────────────────────────────────────────────────────────────┘
+
+> **Note:** The Prep script runs interactively via `Invoke-Expression` so you get the menu. The Assessment script is saved to a file first because it accepts parameters (e.g. `-SubscriptionId`, `-SkipMetrics`).
+
+### Alternative — Download Both Scripts First
+
+If you prefer to review before running, or need to pass parameters to the Prep script:
+
+```powershell
+# Download both scripts
+irm https://raw.githubusercontent.com/arieldavenport/azure-assessment-script/main/Azure-Assessment-Prep.ps1 -OutFile Azure-Assessment-Prep.ps1
+irm https://raw.githubusercontent.com/arieldavenport/azure-assessment-script/main/Azure-Assessment-Complete.ps1 -OutFile Azure-Assessment-Complete.ps1
+
+# Run Prep (interactive menu)
+.\Azure-Assessment-Prep.ps1
+
+# Run Assessment (with optional parameters)
+.\Azure-Assessment-Complete.ps1 -SubscriptionId "xxx" -SkipMetrics
 ```
 
 ---

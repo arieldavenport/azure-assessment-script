@@ -100,15 +100,27 @@ function Get-OrCreateWorkspace {
             $script:WorkspaceRG = $selected.ResourceGroupName
             Write-Host "  Selected: $($selected.Name)" -ForegroundColor Green
             return $script:WorkspaceId
+        } elseif ($choice -notmatch '^[Nn]$') {
+            Write-Host "  Invalid selection." -ForegroundColor Red
+            return $null
         }
     }
 
     # Create new workspace
-    Write-Host "`n  Creating new Log Analytics workspace..." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  ═══ CREATE NEW LOG ANALYTICS WORKSPACE ═══" -ForegroundColor Cyan
     $wsName = if ($LogAnalyticsWorkspaceName) { $LogAnalyticsWorkspaceName }
               else { Read-Host "  Workspace name (e.g., law-assessment-prod)" }
+    if (-not $wsName) {
+        Write-Host "  Workspace name cannot be empty." -ForegroundColor Red
+        return $null
+    }
     $wsRG   = if ($LogAnalyticsResourceGroup) { $LogAnalyticsResourceGroup }
               else { Read-Host "  Resource group name" }
+    if (-not $wsRG) {
+        Write-Host "  Resource group name cannot be empty." -ForegroundColor Red
+        return $null
+    }
     $wsLoc  = Read-Host "  Location (default: $Location)"
     if (-not $wsLoc) { $wsLoc = $Location }
 
@@ -276,7 +288,11 @@ function Invoke-Option2_InstallModules {
 function Invoke-Option3_Workspace {
     Write-Host "`n  ═══ LOG ANALYTICS WORKSPACE SETUP ═══" -ForegroundColor Cyan
     Get-OrCreateWorkspace | Out-Null
-    Write-Host "`n  Workspace ready: $script:WorkspaceName ($script:WorkspaceId)" -ForegroundColor Green
+    if ($script:WorkspaceId) {
+        Write-Host "`n  Workspace ready: $script:WorkspaceName ($script:WorkspaceId)" -ForegroundColor Green
+    } else {
+        Write-Host "`n  ⚠ No workspace selected. Other steps requiring a workspace will be skipped." -ForegroundColor Yellow
+    }
 }
 
 function Invoke-Option4_InstallAMA {
@@ -541,16 +557,16 @@ function Invoke-Option6_DiagnosticSettings {
     foreach ($res in $needDiag) {
         try {
             # Get available diagnostic categories for this resource type
-            $categories = Get-AzDiagnosticSettingCategory -ResourceId $res.ResourceId -ErrorAction SilentlyContinue
+            $categories = Get-AzDiagnosticSettingCategory -ResourceId $res.ResourceId -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
 
             $logSettings = [System.Collections.Generic.List[object]]::new()
             $metricSettings = [System.Collections.Generic.List[object]]::new()
 
             foreach ($cat in $categories) {
                 if ($cat.CategoryType -eq 'Logs') {
-                    $logSettings.Add((New-AzDiagnosticSettingLogSettingsObject -Category $cat.Name -Enabled $true))
+                    $logSettings.Add((New-AzDiagnosticSettingLogSettingsObject -Category $cat.Name -Enabled $true -WarningAction SilentlyContinue))
                 } else {
-                    $metricSettings.Add((New-AzDiagnosticSettingMetricSettingsObject -Category $cat.Name -Enabled $true))
+                    $metricSettings.Add((New-AzDiagnosticSettingMetricSettingsObject -Category $cat.Name -Enabled $true -WarningAction SilentlyContinue))
                 }
             }
 
@@ -562,7 +578,7 @@ function Invoke-Option6_DiagnosticSettings {
             if ($logSettings.Count -gt 0)    { $params['Log']    = $logSettings }
             if ($metricSettings.Count -gt 0) { $params['Metric'] = $metricSettings }
 
-            New-AzDiagnosticSetting @params -ErrorAction Stop | Out-Null
+            New-AzDiagnosticSetting @params -WarningAction SilentlyContinue -ErrorAction Stop | Out-Null
             Write-Host "    ✓ $($res.Name) ($($res.ResourceType.Split('/')[-1]))" -ForegroundColor Green
             $successCount++
         } catch {

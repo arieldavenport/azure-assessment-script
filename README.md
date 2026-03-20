@@ -81,6 +81,7 @@ Iterates all enabled subscriptions, collects 60+ CSVs across 19 categories, gene
 
 | # | Category | CSVs | Key Findings |
 |---|----------|------|-------------|
+| 00 | Subscriptions | Subscription list with offer/agreement type | EA, MCA, CSP, PAYG classification, spending limits |
 | 01 | Resource Inventory | Resource counts by type and location | Full resource map |
 | 02 | Compute | VMs, VM Metrics, VM Scale Sets | Stopped VMs still billing, right-sizing (CPU <5% = deallocate, <15% = downsize) |
 | 03 | App Services | App Service Plans, Web Apps | Empty plans (pure waste), HTTPS/TLS config |
@@ -107,6 +108,7 @@ Iterates all enabled subscriptions, collects 60+ CSVs across 19 categories, gene
 
 ```
 AzureAssessment_20260320-1430/
+├── Subscriptions.csv               ← Subscription list with offer type (EA/MCA/CSP/PAYG)
 ├── 00_ExecutiveSummary.csv         ← Red/green metrics at a glance
 ├── 00_ExportManifest.csv           ← Which files have data and row counts
 ├── 02_VMs.csv

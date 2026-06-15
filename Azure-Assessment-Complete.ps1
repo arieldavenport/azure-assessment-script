@@ -36,13 +36,32 @@ param(
     [string[]]$SubscriptionInclude,
     [string[]]$SubscriptionExclude,
     [int]$MaxRetries = 3,
-    [switch]$FailOnSectionError
+    [switch]$FailOnSectionError,
+    # ── Lighthouse / partner-tenant mode ─────────────────────────────────────
+    # When $LighthouseMode is set, the script assumes it is being driven from a
+    # partner tenant (e.g. Centre) against a delegated customer tenant via Azure
+    # Lighthouse. Behavior differences:
+    #   - Section 19 (Management Groups) is skipped (Lighthouse cannot delegate MG scope)
+    #   - Subscriptions are filtered to $CustomerTenantId when provided
+    #   - Output dir/zip are prefixed with $CustomerName
+    #   - Key Vaults with access-policy auth get a console warning (Lighthouse
+    #     principals cannot read their secrets/certs)
+    # All three params default to off/empty; without them, behavior is identical
+    # to direct-tenant use.
+    [switch]$LighthouseMode,
+    [string]$CustomerName,
+    [string]$CustomerTenantId
 )
 
 #region ── Setup ──────────────────────────────────────────────────────────────
 $ErrorActionPreference = 'Continue'
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmm'
-if (-not $OutputPath) { $OutputPath = "./AzureAssessment_$timestamp" }
+if (-not $OutputPath) {
+    # When a CustomerName is supplied (typically by the Lighthouse wrapper),
+    # prefix the output dir/zip so multi-customer runs don't collide.
+    $prefix = if ($CustomerName) { ($CustomerName -replace '[^a-zA-Z0-9_-]', '_') + '_' } else { '' }
+    $OutputPath = "./${prefix}AzureAssessment_$timestamp"
+}
 New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
 
 # Transcript logging
@@ -132,10 +151,26 @@ if (-not $ctx) {
 Write-Host "  Signed in as: $($ctx.Account.Id)" -ForegroundColor Green
 Write-Host "  Tenant:       $($ctx.Tenant.Id)" -ForegroundColor Green
 
+if ($LighthouseMode) {
+    Write-Host ""
+    Write-Host "  ┌─────────────────────────────────────────────────────────────┐" -ForegroundColor Magenta
+    Write-Host "  │  LIGHTHOUSE MODE                                            │" -ForegroundColor Magenta
+    Write-Host "  │  Running as partner against a delegated customer tenant.    │" -ForegroundColor Magenta
+    Write-Host "  └─────────────────────────────────────────────────────────────┘" -ForegroundColor Magenta
+    if ($CustomerName)     { Write-Host "  Customer:        $CustomerName" -ForegroundColor Magenta }
+    if ($CustomerTenantId) { Write-Host "  Customer tenant: $CustomerTenantId" -ForegroundColor Magenta }
+    Write-Host ""
+}
+
 if ($SubscriptionId) {
     $subscriptions = @(Get-AzSubscription -SubscriptionId $SubscriptionId)
 } else {
     $subscriptions = Get-AzSubscription | Where-Object { $_.State -eq 'Enabled' }
+}
+# Lighthouse mode: restrict to subs belonging to the customer tenant. Prevents
+# accidentally scanning the operator's own partner-tenant subs in the same run.
+if ($LighthouseMode -and $CustomerTenantId) {
+    $subscriptions = @($subscriptions | Where-Object { $_.TenantId -eq $CustomerTenantId })
 }
 if ($SubscriptionInclude) {
     $subscriptions = @($subscriptions | Where-Object { $_.Name -in $SubscriptionInclude -or $_.Id -in $SubscriptionInclude })
@@ -1058,6 +1093,12 @@ foreach ($sub in $subscriptions) {
             SKU             = $vault.Sku
         })
 
+        # Lighthouse principals can read secrets/certs only on RBAC-authorized vaults.
+        # Access-policy vaults silently return empty — surface that to the operator.
+        if ($LighthouseMode -and -not $vault.EnableRbacAuthorization) {
+            Write-Host "    ⚠ Key Vault '$($vault.VaultName)' uses Access Policies — Lighthouse principals cannot read secrets/certs." -ForegroundColor Yellow
+        }
+
         # Check for expiring secrets/certs
         try {
             Get-AzKeyVaultSecret -VaultName $vault.VaultName -ErrorAction SilentlyContinue |
@@ -1379,17 +1420,24 @@ foreach ($sub in $subscriptions) {
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # MANAGEMENT GROUPS (tenant-level, outside sub loop)
+# Azure Lighthouse cannot delegate management-group scope, so this section is
+# skipped under -LighthouseMode. Direct-tenant runs are unchanged.
 # ═══════════════════════════════════════════════════════════════════════════════
-Write-Section "19. Management Groups"
-try {
-    Get-AzManagementGroup -ErrorAction SilentlyContinue | ForEach-Object {
-        $null = $allMgmtGroups.Add([PSCustomObject]@{
-            Name        = $_.Name
-            DisplayName = $_.DisplayName
-            Id          = $_.Id
-        })
-    }
-} catch {}
+if ($LighthouseMode) {
+    Write-Section "19. Management Groups (skipped — Lighthouse mode)"
+    Write-Host "  Lighthouse cannot delegate management-group scope. Section skipped." -ForegroundColor DarkYellow
+} else {
+    Write-Section "19. Management Groups"
+    try {
+        Get-AzManagementGroup -ErrorAction SilentlyContinue | ForEach-Object {
+            $null = $allMgmtGroups.Add([PSCustomObject]@{
+                Name        = $_.Name
+                DisplayName = $_.DisplayName
+                Id          = $_.Id
+            })
+        }
+    } catch {}
+}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # EXPORT ALL DATA
@@ -1539,6 +1587,14 @@ $executiveSummary = [ordered]@{
     "Data Factories"              = @($allDataFactories).Count
     "Automation Accounts"         = @($allAutomationAccts).Count
     "Arc Connected Machines"      = @($allArcMachines).Count
+}
+
+# In Lighthouse mode, prepend customer/tenant identity to the summary so the CSV
+# header row makes it obvious which customer the export belongs to.
+if ($LighthouseMode) {
+    if ($CustomerTenantId) { $executiveSummary.Insert(0, "Customer Tenant", $CustomerTenantId) }
+    if ($CustomerName)     { $executiveSummary.Insert(0, "Customer",        $CustomerName) }
+    $executiveSummary.Insert(0, "Run Mode", "Lighthouse (partner)")
 }
 
 $executiveSummary.GetEnumerator() | ForEach-Object {

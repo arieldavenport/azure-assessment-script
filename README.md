@@ -244,3 +244,92 @@ Day 14+     Run Azure-Assessment-Complete.ps1
 ```
 
 If you need a quick inventory without utilization data, you can skip the prep and run the assessment immediately with `-SkipMetrics`.
+
+---
+
+## Run via Azure Lighthouse + GDAP (partner mode)
+
+`Azure-Assessment-Lighthouse.ps1` lets a Centre operator run the assessment (and optionally the prep) against customer tenants delegated to Centre via Azure Lighthouse — without leaving Centre's partner tenant. The Complete and Prep scripts themselves are unchanged for direct-tenant Cloud Shell use; the wrapper just orchestrates them per customer.
+
+### Prerequisites
+
+**Lighthouse delegation** (for Azure resource access):
+
+Centre publishes a Lighthouse onboarding ARM template (managed outside this repo). Customers deploy it once to delegate the following built-in roles to a Centre security group at subscription scope:
+
+| Role | Needed for |
+|------|-----------|
+| Reader | Sections 01–12, 15–18 inventory |
+| Security Reader | Section 13 Defender, Secure Score, alerts |
+| Monitoring Reader | Sections 02 / 08 metrics, Section 16 diagnostics/alerts |
+| Billing Reader | Section 14 cost / consumption / reservations / budgets |
+| Contributor | Prep — resource creation, provider registration |
+| Monitoring Contributor | Prep — diagnostic settings, VMInsights |
+| Virtual Machine Contributor | Prep — managed identity + AMA / DA extensions |
+| Log Analytics Contributor | Prep — workspace creation |
+
+**GDAP relationship** (for Microsoft Graph / Entra ID access):
+
+Lighthouse covers Azure ARM only — Microsoft Graph is per-tenant and must be delegated separately. As Centre's customers' CSP partner, request a GDAP relationship assigning **Directory Readers** + **Security Reader** (or **Global Reader** as a shortcut) to the same Centre group. Then pass `-ConnectGraph` so the wrapper connects Graph to each customer tenant via `Connect-MgGraph -TenantId <customer>`.
+
+> Note: the Complete script does not currently include Graph-based Entra ID sections. The `-ConnectGraph` switch is wired through the wrapper so the same UX works once those sections land.
+
+### Usage
+
+```powershell
+# Discover delegated customers, pick one interactively
+.\Azure-Assessment-Lighthouse.ps1
+
+# Run against one specific customer
+.\Azure-Assessment-Lighthouse.ps1 `
+    -CustomerTenantId 11111111-1111-1111-1111-111111111111 `
+    -CustomerName "Acme"
+
+# Sweep every delegated customer (Assessment only)
+.\Azure-Assessment-Lighthouse.ps1 -All -Mode Assessment
+
+# Full prep + assessment for one customer
+.\Azure-Assessment-Lighthouse.ps1 `
+    -CustomerTenantId <guid> -CustomerName "Acme" -Mode Both
+
+# Include Graph (requires GDAP + Microsoft.Graph.Authentication module)
+.\Azure-Assessment-Lighthouse.ps1 -All -ConnectGraph
+```
+
+### Output layout
+
+```
+LighthouseAssessments/
+├── Acme_20260615-1430/
+│   ├── 00_ExecutiveSummary.csv         ← header rows include customer + tenant
+│   ├── 02_VMs.csv, 06_UnattachedDisks.csv, ... (all standard CSVs)
+│   └── Acme_AzureAssessment_20260615-1430.zip
+├── Globex_20260615-1430/
+│   └── ...
+└── Lighthouse_Rollup_20260615-1430.csv  ← per-customer pass/fail + duration
+```
+
+### Wrapper parameters
+
+| Parameter | Default | Purpose |
+|-----------|---------|---------|
+| `-CustomerTenantId` | — | GUID of a single customer tenant. Omit for picker / `-All` |
+| `-CustomerName` | TenantId | Friendly label for output dir/zip |
+| `-All` | off | Loop every delegated customer |
+| `-Mode` | `Assessment` | `Assessment`, `Prep`, or `Both` |
+| `-OutputRoot` | `./LighthouseAssessments` | Parent dir for per-customer outputs |
+| `-SkipMetrics` | off | Pass-through to Assessment for speed |
+| `-DaysBack` | `30` | Pass-through metric lookback window |
+| `-PartnerTenantId` | current ctx | Override partner tenant (for `Connect-AzAccount -Tenant`) |
+| `-ConnectGraph` | off | Connect Microsoft Graph to each customer via GDAP |
+
+### Limitations under Lighthouse mode
+
+- **Section 19 (Management Groups) is skipped.** Lighthouse cannot delegate management-group scope. Direct-tenant runs still collect it.
+- **Key Vaults using Access Policy auth return no secrets/certs.** Lighthouse principals are only honored by RBAC-authorized vaults. The script prints a yellow warning per access-policy vault it encounters in Lighthouse mode.
+- **Section 14 (Cost) depends on Billing Reader being included in the Lighthouse template.** EA / MCA billing scopes may require an additional billing-account role assignment that isn't part of the standard subscription-scope delegation.
+- **Microsoft Graph (Entra ID, Conditional Access, app registrations) requires GDAP**, not Lighthouse. Use `-ConnectGraph` once Graph sections are present.
+
+### Direct-tenant Cloud Shell flow is unchanged
+
+The `-LighthouseMode`, `-CustomerName`, and `-CustomerTenantId` parameters on `Azure-Assessment-Complete.ps1` and `Azure-Assessment-Prep.ps1` all default to off/empty. Running either script the way today's docs show — from a customer's own Cloud Shell with no new flags — produces the same output as before.

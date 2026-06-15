@@ -23,7 +23,20 @@ param(
     [string]$LogAnalyticsWorkspaceName,
     [string]$LogAnalyticsResourceGroup,
     [string]$Location = 'southcentralus',
-    [switch]$RunAll
+    [switch]$RunAll,
+    # ── Lighthouse / partner-tenant mode ─────────────────────────────────────
+    # When $LighthouseMode is set, the script assumes it is being driven from a
+    # partner tenant (e.g. Centre) against a delegated customer tenant via Azure
+    # Lighthouse. Behavior differences:
+    #   - Prints a "WRITING TO CUSTOMER TENANT" banner before any write op
+    #   - Confirmation prompts in -RunAll are auto-accepted (the wrapper drove the decision)
+    #   - If workspace name/RG are not supplied, deterministic defaults are used
+    #     so the script can run headlessly across many customers
+    # All three params default to off/empty; without them, behavior is identical
+    # to direct-tenant use.
+    [switch]$LighthouseMode,
+    [string]$CustomerName,
+    [string]$CustomerTenantId
 )
 
 $ErrorActionPreference = 'Continue'
@@ -71,6 +84,12 @@ function Show-Menu {
 
 function Confirm-Action {
     param([string]$Message)
+    # In Lighthouse mode the wrapper has already prompted the operator — auto-accept
+    # so the script can run headlessly across many customer tenants.
+    if ($LighthouseMode) {
+        Write-Host "`n  $Message (Y/N) → auto-Y (Lighthouse mode)" -ForegroundColor DarkGray
+        return $true
+    }
     Write-Host ""
     $response = Read-Host "  $Message (Y/N)"
     return $response -match '^[Yy]'
@@ -83,6 +102,17 @@ function Get-OrCreateWorkspace {
     $workspaces = Get-AzOperationalInsightsWorkspace -ErrorAction SilentlyContinue
 
     if ($workspaces) {
+        # In Lighthouse mode, prefer reusing the first existing workspace silently
+        # rather than prompting the operator to pick one across N customers.
+        if ($LighthouseMode) {
+            $selected = $workspaces | Select-Object -First 1
+            $script:WorkspaceId = $selected.ResourceId
+            $script:WorkspaceName = $selected.Name
+            $script:WorkspaceRG = $selected.ResourceGroupName
+            Write-Host "  Auto-selected existing workspace (Lighthouse mode): $($selected.Name)" -ForegroundColor Green
+            return $script:WorkspaceId
+        }
+
         Write-Host "`n  Existing workspaces:" -ForegroundColor Cyan
         $i = 0
         foreach ($ws in $workspaces) {
@@ -109,19 +139,27 @@ function Get-OrCreateWorkspace {
     # Create new workspace
     Write-Host ""
     Write-Host "  ═══ CREATE NEW LOG ANALYTICS WORKSPACE ═══" -ForegroundColor Cyan
+
+    # In Lighthouse mode, generate deterministic-but-unique defaults so the
+    # script doesn't hang on Read-Host across many customer tenants.
     $wsName = if ($LogAnalyticsWorkspaceName) { $LogAnalyticsWorkspaceName }
+              elseif ($LighthouseMode) {
+                  $suffix = -join ((48..57) + (97..122) | Get-Random -Count 6 | ForEach-Object { [char]$_ })
+                  "la-centre-assess-$suffix"
+              }
               else { Read-Host "  Workspace name (e.g., law-assessment-prod)" }
     if (-not $wsName) {
         Write-Host "  Workspace name cannot be empty." -ForegroundColor Red
         return $null
     }
     $wsRG   = if ($LogAnalyticsResourceGroup) { $LogAnalyticsResourceGroup }
+              elseif ($LighthouseMode) { 'rg-centre-assessment' }
               else { Read-Host "  Resource group name" }
     if (-not $wsRG) {
         Write-Host "  Resource group name cannot be empty." -ForegroundColor Red
         return $null
     }
-    $wsLoc  = Read-Host "  Location (default: $Location)"
+    $wsLoc  = if ($LighthouseMode) { $Location } else { Read-Host "  Location (default: $Location)" }
     if (-not $wsLoc) { $wsLoc = $Location }
 
     # Ensure RG exists
@@ -847,6 +885,24 @@ if (-not $ctx) {
 
 if ($SubscriptionId) {
     Set-AzContext -SubscriptionId $SubscriptionId | Out-Null
+}
+
+if ($LighthouseMode) {
+    Write-Host ""
+    Write-Host "  ┌─────────────────────────────────────────────────────────────┐" -ForegroundColor Magenta
+    Write-Host "  │  LIGHTHOUSE MODE — WRITING TO A CUSTOMER TENANT             │" -ForegroundColor Magenta
+    Write-Host "  │  Prep will install agents and create resources in the       │" -ForegroundColor Magenta
+    Write-Host "  │  delegated customer subscription. Make sure you intended    │" -ForegroundColor Magenta
+    Write-Host "  │  to make changes to this tenant.                            │" -ForegroundColor Magenta
+    Write-Host "  └─────────────────────────────────────────────────────────────┘" -ForegroundColor Magenta
+    if ($CustomerName)     { Write-Host "  Customer:        $CustomerName" -ForegroundColor Magenta }
+    if ($CustomerTenantId) { Write-Host "  Customer tenant: $CustomerTenantId" -ForegroundColor Magenta }
+    $ctxNow = Get-AzContext
+    if ($ctxNow) {
+        Write-Host "  Active sub:      $($ctxNow.Subscription.Name) ($($ctxNow.Subscription.Id))" -ForegroundColor Magenta
+        Write-Host "  Sub tenant:      $($ctxNow.Subscription.TenantId)" -ForegroundColor Magenta
+    }
+    Write-Host ""
 }
 
 # Non-interactive mode: run all prep steps and exit

@@ -72,7 +72,7 @@ function Export-SafeCsv {
     param($Data, [string]$FileName)
     $path = "$OutputPath/$FileName"
     if ($Data -and @($Data).Count -gt 0) {
-        $Data | Export-Csv $path -NoTypeInformation
+        $Data | Export-Csv $path -NoTypeInformation -Encoding UTF8
         $count = @($Data).Count
         Write-Host "    ✓ Exported $count rows → $FileName" -ForegroundColor Green
         $null = $summaryData.Add([PSCustomObject]@{ File=$FileName; Rows=$count })
@@ -119,6 +119,19 @@ function Invoke-WithRetry {
 # Section error/timing tracking
 $sectionErrors = [System.Collections.ArrayList]::new()
 $sectionTimings = [System.Collections.ArrayList]::new()
+
+function Write-SectionError {
+    param($ErrorRecord, [string]$Context = '')
+    $where = if ($Context) { $Context }
+             elseif ($ErrorRecord.InvocationInfo) { "Line $($ErrorRecord.InvocationInfo.ScriptLineNumber)" }
+             else { 'Unknown' }
+    $msg = if ($ErrorRecord.Exception) { $ErrorRecord.Exception.Message } else { "$ErrorRecord" }
+    $null = $sectionErrors.Add([PSCustomObject]@{
+        Subscription = $script:currentSubName
+        Context      = $where
+        Error        = $msg
+    })
+}
 #endregion
 
 #region ── Authentication Check ───────────────────────────────────────────────
@@ -126,8 +139,13 @@ Write-Section "0. Authentication & Subscription Selection"
 $ctx = Get-AzContext
 if (-not $ctx) {
     Write-Host "  Not authenticated. Running Connect-AzAccount..." -ForegroundColor Yellow
-    Connect-AzAccount
+    try { Connect-AzAccount -ErrorAction Stop | Out-Null } catch {}
     $ctx = Get-AzContext
+}
+if (-not $ctx) {
+    Write-Host "  ✗ Azure authentication failed or was cancelled. Run Connect-AzAccount and retry." -ForegroundColor Red
+    try { Stop-Transcript | Out-Null } catch {}
+    return
 }
 Write-Host "  Signed in as: $($ctx.Account.Id)" -ForegroundColor Green
 Write-Host "  Tenant:       $($ctx.Tenant.Id)" -ForegroundColor Green
@@ -144,6 +162,11 @@ if ($SubscriptionExclude) {
     $subscriptions = @($subscriptions | Where-Object { $_.Name -notin $SubscriptionExclude -and $_.Id -notin $SubscriptionExclude })
 }
 Write-Host "  Subscriptions to assess: $($subscriptions.Count)" -ForegroundColor Green
+if (@($subscriptions).Count -eq 0) {
+    Write-Host "  ✗ No subscriptions matched the selection criteria. Nothing to assess." -ForegroundColor Red
+    try { Stop-Transcript | Out-Null } catch {}
+    return
+}
 
 # Export subscription list with offer/agreement type
 $subscriptions | ForEach-Object {
@@ -172,7 +195,7 @@ $subscriptions | ForEach-Object {
         SpendingLimit = $_.SubscriptionPolicies.SpendingLimit
         OfferType     = $offerType
     }
-} | Export-Csv "$OutputPath/Subscriptions.csv" -NoTypeInformation
+} | Export-Csv "$OutputPath/Subscriptions.csv" -NoTypeInformation -Encoding UTF8
 #endregion
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -262,6 +285,7 @@ foreach ($sub in $subscriptions) {
     Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor White
     Set-AzContext -SubscriptionId $sub.Id | Out-Null
     $subName = $sub.Name
+    $script:currentSubName = $sub.Name
 
     #region ── 1. Resource Inventory ──────────────────────────────────────────
     Write-Section "1. Resource Inventory"
@@ -338,7 +362,7 @@ foreach ($sub in $subscriptions) {
                 Zones         = ($_.Zones -join ', ')
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
     #endregion
 
     #region ── 3. App Services ────────────────────────────────────────────────
@@ -396,7 +420,7 @@ foreach ($sub in $subscriptions) {
                     })
                 }
             }
-    } catch {}
+    } catch { Write-SectionError $_ }
     #endregion
 
     #region ── 5. Logic Apps ──────────────────────────────────────────────────
@@ -411,7 +435,7 @@ foreach ($sub in $subscriptions) {
                 State         = $_.Properties.state
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
     #endregion
 
     #region ── 6. Storage ─────────────────────────────────────────────────────
@@ -474,7 +498,7 @@ foreach ($sub in $subscriptions) {
                     AccessTier     = $_.ShareProperties.AccessTier
                 })
             }
-        } catch {}
+        } catch { Write-SectionError $_ }
     }
     #endregion
 
@@ -583,7 +607,7 @@ foreach ($sub in $subscriptions) {
                 ProvisionState = $_.ProvisioningState
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "Azure Front Door"
     try {
@@ -606,7 +630,7 @@ foreach ($sub in $subscriptions) {
                 Kind          = 'Classic'
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "Azure Bastion"
     try {
@@ -618,7 +642,7 @@ foreach ($sub in $subscriptions) {
                 Location      = $_.Location
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "NAT Gateways"
     try {
@@ -632,7 +656,7 @@ foreach ($sub in $subscriptions) {
                 PublicIpCount       = @($_.PublicIpAddresses).Count
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "VPN Gateways"
     Get-AzResource -ResourceType 'Microsoft.Network/virtualNetworkGateways' -ErrorAction SilentlyContinue | ForEach-Object {
@@ -694,7 +718,7 @@ foreach ($sub in $subscriptions) {
                 NameServers   = ($_.NameServers -join ', ')
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "Network Watchers"
     try {
@@ -707,7 +731,7 @@ foreach ($sub in $subscriptions) {
                 ProvisioningState = $_.ProvisioningState
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "CDN Profiles"
     try {
@@ -721,7 +745,7 @@ foreach ($sub in $subscriptions) {
                     SKU           = if ($_.Sku) { $_.Sku.Name } else { $null }
                 })
             }
-    } catch {}
+    } catch { Write-SectionError $_ }
     #endregion
 
     #region ── 8. Database Services ───────────────────────────────────────────
@@ -766,7 +790,7 @@ foreach ($sub in $subscriptions) {
                 State         = $_.State
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "Cosmos DB"
     Get-AzResource -ResourceType 'Microsoft.DocumentDB/databaseAccounts' -ErrorAction SilentlyContinue | ForEach-Object {
@@ -801,7 +825,7 @@ foreach ($sub in $subscriptions) {
                 })
             }
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "PostgreSQL Flexible Servers"
     try {
@@ -820,7 +844,7 @@ foreach ($sub in $subscriptions) {
                 })
             }
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "Redis Cache"
     try {
@@ -840,7 +864,7 @@ foreach ($sub in $subscriptions) {
                 })
             }
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
     #endregion
 
     #region ── 9. Messaging & Integration ─────────────────────────────────────
@@ -856,7 +880,7 @@ foreach ($sub in $subscriptions) {
                 SKU           = if ($_.Sku) { $_.Sku.Name } else { $null }
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "Event Hubs"
     try {
@@ -869,7 +893,7 @@ foreach ($sub in $subscriptions) {
                 SKU           = if ($_.Sku) { $_.Sku.Name } else { $null }
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "API Management"
     try {
@@ -882,7 +906,7 @@ foreach ($sub in $subscriptions) {
                 SKU           = if ($_.Sku) { $_.Sku.Name } else { $null }
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
     #endregion
 
     #region ── 10. Containers ─────────────────────────────────────────────────
@@ -918,7 +942,7 @@ foreach ($sub in $subscriptions) {
                 }
             }
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "Container Instances"
     try {
@@ -930,7 +954,7 @@ foreach ($sub in $subscriptions) {
                 Location      = $_.Location
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "Container Apps"
     try {
@@ -942,7 +966,7 @@ foreach ($sub in $subscriptions) {
                 Location      = $_.Location
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "Container Registries"
     try {
@@ -960,7 +984,7 @@ foreach ($sub in $subscriptions) {
                 })
             }
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
     #endregion
 
     #region ── 11. Data & Analytics ───────────────────────────────────────────
@@ -975,7 +999,7 @@ foreach ($sub in $subscriptions) {
                 Location      = $_.Location
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
     #endregion
 
     #region ── 12. Identity & RBAC ────────────────────────────────────────────
@@ -1016,7 +1040,7 @@ foreach ($sub in $subscriptions) {
                 PricingTier  = $_.PricingTier
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     try {
         Get-AzSecuritySecureScore -ErrorAction SilentlyContinue | ForEach-Object {
@@ -1028,7 +1052,7 @@ foreach ($sub in $subscriptions) {
                 Percentage   = [math]::Round(($_.CurrentScore / $_.MaxScore) * 100, 1)
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "Security Alerts"
     try {
@@ -1042,7 +1066,7 @@ foreach ($sub in $subscriptions) {
                     StartTime    = $_.StartTimeUtc
                 })
             }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "Key Vaults"
     Get-AzResource -ResourceType 'Microsoft.KeyVault/vaults' -ErrorAction SilentlyContinue | ForEach-Object {
@@ -1084,7 +1108,7 @@ foreach ($sub in $subscriptions) {
                         DaysLeft     = [math]::Max(0, ($_.Expires - (Get-Date)).Days)
                     })
                 }
-        } catch {}
+        } catch { Write-SectionError $_ }
         }
     }
 
@@ -1100,7 +1124,7 @@ foreach ($sub in $subscriptions) {
                     NonCompliantCount = $_.Count
                 })
             }
-    } catch {}
+    } catch { Write-SectionError $_ }
     Get-AzPolicyAssignment -ErrorAction SilentlyContinue | ForEach-Object {
         $null = $allPolicyAssignments.Add([PSCustomObject]@{
             Subscription    = $subName
@@ -1136,7 +1160,7 @@ foreach ($sub in $subscriptions) {
                 Resource     = if ($_.ResourceMetadata -and $_.ResourceMetadata.ResourceId) { $_.ResourceMetadata.ResourceId.Split('/')[-1] } else { $null }
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "Consumption (Last 30 Days)"
     try {
@@ -1153,7 +1177,7 @@ foreach ($sub in $subscriptions) {
                     TotalCost30d  = $_.TotalCost
                 })
             }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "Reservations"
     try {
@@ -1168,7 +1192,7 @@ foreach ($sub in $subscriptions) {
                 Utilization  = $_.Utilization
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "Budgets"
     try {
@@ -1182,7 +1206,7 @@ foreach ($sub in $subscriptions) {
                 Currency     = $_.CurrentSpend.Unit
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
     #endregion
 
     #region ── 15. Backup & DR ────────────────────────────────────────────────
@@ -1217,7 +1241,7 @@ foreach ($sub in $subscriptions) {
                     })
                 }
             }
-        } catch {}
+        } catch { Write-SectionError $_ }
     }
 
     # Unprotected VMs
@@ -1287,7 +1311,7 @@ foreach ($sub in $subscriptions) {
                 })
             }
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "Action Groups"
     try {
@@ -1305,7 +1329,7 @@ foreach ($sub in $subscriptions) {
                 })
             }
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
     #endregion
 
     #region ── 17. Governance & Tags ──────────────────────────────────────────
@@ -1352,7 +1376,7 @@ foreach ($sub in $subscriptions) {
                 Location      = $_.Location
             })
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
 
     Write-SubSection "Azure Arc Machines"
     try {
@@ -1372,7 +1396,7 @@ foreach ($sub in $subscriptions) {
                 }
             }
         }
-    } catch {}
+    } catch { Write-SectionError $_ }
     #endregion
 
 } # End subscription loop
@@ -1389,7 +1413,7 @@ try {
             Id          = $_.Id
         })
     }
-} catch {}
+} catch { Write-SectionError $_ }
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # EXPORT ALL DATA
@@ -1552,7 +1576,7 @@ $executiveSummary.GetEnumerator() | ForEach-Object {
 # Export summary
 $executiveSummary.GetEnumerator() | ForEach-Object {
     [PSCustomObject]@{ Metric = $_.Key; Value = $_.Value }
-} | Export-Csv "$OutputPath/00_ExecutiveSummary.csv" -NoTypeInformation
+} | Export-Csv "$OutputPath/00_ExecutiveSummary.csv" -NoTypeInformation -Encoding UTF8
 
 Export-SafeCsv $summaryData "00_ExportManifest.csv"
 Export-SafeCsv $sectionErrors "00_SectionErrors.csv"
@@ -1653,7 +1677,8 @@ if ($isCloudShell) {
 "@ -ForegroundColor DarkGray
 } else {
     Write-Host "  Local terminal detected — zip is already on disk:" -ForegroundColor Yellow
-    Write-Host "    $((Resolve-Path $zipPath -ErrorAction SilentlyContinue) ?? $zipPath)" -ForegroundColor Green
+    $resolvedZip = (Resolve-Path $zipPath -ErrorAction SilentlyContinue)
+    Write-Host "    $(if ($resolvedZip) { $resolvedZip.Path } else { $zipPath })" -ForegroundColor Green
     Write-Host ""
     Write-Host "  To upload to Azure Storage for sharing:" -ForegroundColor Yellow
     Write-Host @"

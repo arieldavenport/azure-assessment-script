@@ -77,6 +77,8 @@ function Confirm-Action {
 }
 
 function Get-OrCreateWorkspace {
+    [CmdletBinding(SupportsShouldProcess)]
+    param()
     if ($script:WorkspaceId) { return $script:WorkspaceId }
 
     Write-Host "`n  Checking for existing Log Analytics workspaces..." -ForegroundColor Yellow
@@ -131,6 +133,7 @@ function Get-OrCreateWorkspace {
         New-AzResourceGroup -Name $wsRG -Location $wsLoc | Out-Null
     }
 
+    if (-not $PSCmdlet.ShouldProcess($wsName, "Create Log Analytics workspace")) { return }
     $ws = New-AzOperationalInsightsWorkspace `
         -ResourceGroupName $wsRG `
         -Name $wsName `
@@ -296,6 +299,8 @@ function Invoke-Option3_Workspace {
 }
 
 function Invoke-Option4_InstallAMA {
+    [CmdletBinding(SupportsShouldProcess)]
+    param()
     Write-Host "`n  ═══ INSTALL AZURE MONITOR AGENT ON ALL VMs ═══" -ForegroundColor Cyan
 
     $vms = Get-AzVM -ErrorAction SilentlyContinue
@@ -326,6 +331,7 @@ function Invoke-Option4_InstallAMA {
     # Ensure managed identity is enabled (required for AMA)
     foreach ($vm in $toInstall) {
         Write-Host "`n  Processing: $($vm.Name)" -ForegroundColor Yellow
+        if (-not $PSCmdlet.ShouldProcess($vm.Name, "Install Azure Monitor Agent")) { continue }
 
         # Enable system-assigned managed identity if not already
         if (-not $vm.Identity -or $vm.Identity.Type -notmatch 'SystemAssigned') {
@@ -365,6 +371,8 @@ function Invoke-Option4_InstallAMA {
 }
 
 function Invoke-Option5_CreateDCR {
+    [CmdletBinding(SupportsShouldProcess)]
+    param()
     Write-Host "`n  ═══ CREATE DATA COLLECTION RULES ═══" -ForegroundColor Cyan
 
     $wsId = Get-OrCreateWorkspace
@@ -486,8 +494,10 @@ function Invoke-Option5_CreateDCR {
         $osType = $vm.StorageProfile.OsDisk.OsType
         $dcrId = if ($osType -eq 'Windows') { $script:WinDcrId } else { $script:LinDcrId }
         if (-not $dcrId) { continue }
+        if (-not $PSCmdlet.ShouldProcess($vm.Name, "Associate $osType DCR")) { continue }
 
-        $assocName = "assoc-$($vm.ResourceGroupName)-$($vm.Name)"
+        $assocName = "assoc-$($vm.ResourceGroupName)-$($vm.Name)" -replace '[^-\w\.\(\)]', '_'
+        if ($assocName.Length -gt 64) { $assocName = $assocName.Substring(0, 64) }
         try {
             $assocUri = "https://management.azure.com$($vm.Id)/providers/Microsoft.Insights/dataCollectionRuleAssociations/${assocName}?api-version=2022-06-01"
             $assocBody = @{
@@ -505,6 +515,8 @@ function Invoke-Option5_CreateDCR {
 }
 
 function Invoke-Option6_DiagnosticSettings {
+    [CmdletBinding(SupportsShouldProcess)]
+    param()
     Write-Host "`n  ═══ ENABLE DIAGNOSTIC SETTINGS ═══" -ForegroundColor Cyan
 
     $wsId = Get-OrCreateWorkspace
@@ -551,6 +563,7 @@ function Invoke-Option6_DiagnosticSettings {
 
     $successCount = 0; $failCount = 0
     foreach ($res in $needDiag) {
+        if (-not $PSCmdlet.ShouldProcess($res.Name, "Enable diagnostic settings")) { continue }
         try {
             # Get available diagnostic categories for this resource type
             $categories = Get-AzDiagnosticSettingCategory -ResourceId $res.ResourceId -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
@@ -586,6 +599,8 @@ function Invoke-Option6_DiagnosticSettings {
 }
 
 function Invoke-Option7_VMInsights {
+    [CmdletBinding(SupportsShouldProcess)]
+    param()
     Write-Host "`n  ═══ ENABLE VM INSIGHTS ═══" -ForegroundColor Cyan
 
     $wsId = Get-OrCreateWorkspace
@@ -616,6 +631,7 @@ function Invoke-Option7_VMInsights {
         $osType = $vm.StorageProfile.OsDisk.OsType
         $extType = if ($osType -eq 'Windows') { 'DependencyAgentWindows' } else { 'DependencyAgentLinux' }
         Write-Host "    Installing $extType on $($vm.Name)..." -ForegroundColor Yellow
+        if (-not $PSCmdlet.ShouldProcess($vm.Name, "Install $extType")) { continue }
         try {
             Set-AzVMExtension `
                 -ResourceGroupName $vm.ResourceGroupName `
@@ -663,6 +679,8 @@ function Invoke-Option7_VMInsights {
 }
 
 function Invoke-Option8_RegisterProviders {
+    [CmdletBinding(SupportsShouldProcess)]
+    param()
     Write-Host "`n  ═══ REGISTER RESOURCE PROVIDERS ═══" -ForegroundColor Cyan
 
     $providers = @(
@@ -683,7 +701,9 @@ function Invoke-Option8_RegisterProviders {
             Write-Host "    ✓ $provider (already registered)" -ForegroundColor Green
         } else {
             Write-Host "    Registering $provider..." -ForegroundColor Yellow
-            Register-AzResourceProvider -ProviderNamespace $provider -ErrorAction SilentlyContinue | Out-Null
+            if ($PSCmdlet.ShouldProcess($provider, "Register resource provider")) {
+                Register-AzResourceProvider -ProviderNamespace $provider -ErrorAction SilentlyContinue | Out-Null
+            }
             Write-Host "    ✓ $provider (registration initiated)" -ForegroundColor Green
         }
     }
@@ -842,7 +862,9 @@ function Invoke-OptionA_RunAll {
 $ctx = Get-AzContext
 if (-not $ctx) {
     Write-Host "  Not authenticated. Running Connect-AzAccount..." -ForegroundColor Yellow
-    Connect-AzAccount
+    try { Connect-AzAccount -ErrorAction Stop | Out-Null } catch { Write-Host "  ✗ Authentication failed: $($_.Exception.Message)" -ForegroundColor Red; return }
+    $ctx = Get-AzContext
+    if (-not $ctx) { Write-Host "  ✗ Authentication was cancelled or failed. Exiting." -ForegroundColor Red; return }
 }
 
 if ($SubscriptionId) {
